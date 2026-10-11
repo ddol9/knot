@@ -1,15 +1,15 @@
 # 리팩토링 진행 상황
 
-> 실시간 업데이트 - 마지막 수정: 2026-10-12 (Phase 1.1 완료!)
+> 실시간 업데이트 - 마지막 수정: 2026-10-12 (Phase 1.2 완료! 🎉)
 
 ---
 
-## 📊 전체 진행률: 15%
+## 📊 전체 진행률: 25%
 
 ```
-[██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 15%
+[██████████░░░░░░░░░░░░░░░░░░░░░░░░░░] 25%
 
-Phase 1: Agent Ops     [███░░░░░░░] 33%  ✅ Phase 1.1 완료
+Phase 1: Agent Ops     [██████░░░░] 67%  ✅ Phase 1.1, 1.2 완료
 Phase 2: MCP           [░░░░░░░░░░] 0%
 Phase 3: Multi LLM     [░░░░░░░░░░] 0%
 Phase 4: RAG Pipeline  [░░░░░░░░░░] 0%
@@ -20,13 +20,28 @@ Phase 5: Spec Driven   [██░░░░░░░░] 20%  ✅ AgentSpec 완�
 
 ## ✅ 완료된 작업
 
+### 2026-10-12 저녁 - Phase 1.2 완료! 🎉
+- [x] **LangSmith 통합 완료**
+  - `backend/libs/observability/langsmith.py` 생성
+  - `configure_langsmith()` - LangSmith 클라이언트 설정
+  - `@traceable` 데코레이터 - Agent 함수 추적
+  - `trace_agent_execution()` - Agent 실행 컨텍스트 데코레이터
+  - `AgentTracer` - 메트릭 조회 헬퍼 클래스
+  - 기존 Agent 함수에 @traceable 적용:
+    - discovery.py: rank_discovery_candidates, verify_candidates
+    - matching.py: rank_creators, score_creator
+    - negotiation.py: evaluate_creator_message
+    - brand.py: select_creator_for_negotiation, build_initial_terms
+  - observability 모듈 exports 추가
+  - Git 커밋 & 푸시 (commit: 8c52794)
+
 ### 2026-10-12 오후 - Phase 1.1 완료! 🎉
 - [x] **Agent Registry 구현 완료**
   - AgentSpec Pydantic 모델 (Spec Driven Development)
   - AgentRegistry 클래스 (register, get, list, deploy, rollback)
   - FastAPI 라우트 6개 (등록/조회/목록/배포/롤백/상태변경)
   - 단위 테스트 작성 (test_agent_registry.py)
-  - Git 커밋 & 푸시 (commit: be30642)
+  - PR #1 머지 완료
 
 ### 2026-10-12 오전 - 문서화
 - [x] SKT JD 분석 및 핵심 키워드 추출
@@ -41,7 +56,7 @@ Phase 5: Spec Driven   [██░░░░░░░░] 20%  ✅ AgentSpec 완�
 
 ## 🚧 진행 중
 
-### Phase 1: Agent Ops 플랫폼 기반 (33% 완료)
+### Phase 1: Agent Ops 플랫폼 기반 (67% 완료)
 
 **목표**: Agent 생명주기 관리 + LangSmith + Governance
 
@@ -59,19 +74,29 @@ Phase 5: Spec Driven   [██░░░░░░░░] 20%  ✅ AgentSpec 완�
 - AgentRegistry: register, get, list, deploy, rollback, update_status
 - API 엔드포인트: POST/GET /api/v1/agents, deploy, rollback, status
 
-#### 1.2 LangSmith 통합 (다음 작업)
-- [ ] LangSmith API 키 설정
-- [ ] `@traceable` 데코레이터 적용
-- [ ] Agent 실행 추적 테스트
-- [ ] 대시보드 설정 문서 작성
+#### 1.2 LangSmith 통합 ✅ **완료!**
+- [x] `backend/libs/observability/langsmith.py` 생성
+- [x] `@traceable` 데코레이터 구현
+- [x] 기존 Agent 함수에 적용 (discovery, matching, negotiation, brand)
+- [x] observability 모듈 exports 추가
+- [x] Git 커밋 & 푸시
 
-#### 1.3 AI Governance Engine
+**구현된 기능:**
+- configure_langsmith(): LangSmith 클라이언트 설정
+- @traceable: Agent 함수를 LangSmith로 추적하는 데코레이터
+- trace_agent_execution(): Agent ID/버전 자동 태그 추가
+- AgentTracer: 메트릭 조회 헬퍼 클래스
+- 7개 Agent 함수에 @traceable 적용 완료
+
+#### 1.3 AI Governance Engine (다음 작업)
 - [ ] `backend/libs/agent_ops/governance.py` 생성
 - [ ] 예산 초과 검증 로직
 - [ ] PII 노출 감지 (Gemini)
 - [ ] 감사 로그 Firestore 저장
+- [ ] FastAPI 라우트 구현
+- [ ] 테스트 작성
 
-**예상 완료일**: 2026-10-19
+**예상 완료일**: 2026-10-14
 
 ---
 
