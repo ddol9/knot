@@ -4,10 +4,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { connectPhantom, signPhantomMessage } from "@/features/wallet/phantom";
+import { connectPhantom } from "@/features/wallet/phantom";
 import { signOutFirebase, firebaseConfigured } from "@/auth/firebaseClient";
-import { ProductApiClient } from "@/product/apiClient";
 import { withBase } from "@/demo/ui/asset";
+import { useUsdcBalance, formatUsdc } from "@/demo/wallet/balance";
 import { clearSession, shortAddress, updateSession, useKnotSession } from "./session";
 
 const METHOD_LABEL = {
@@ -45,7 +45,7 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
   const router = useRouter();
   const session = useKnotSession();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { balance: realUsdc, failed: balanceFailed } = useUsdcBalance(session?.wallet);
   if (!session) return null;
 
   const logout = async () => {
@@ -63,19 +63,11 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
   const connectWallet = async () => {
     if (busy) return;
     setBusy(true);
-    setError(null);
     try {
       const address = await connectPhantom();
-      const client = new ProductApiClient();
-      const { challenge } = await client.createWalletChallenge(address);
-      const signature = await signPhantomMessage(challenge.message);
-      const saved = await client.saveWalletAddress(address, {
-        challengeId: challenge.challengeId,
-        signature,
-      });
-      updateSession({ wallet: saved.wallet.walletAddress });
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      updateSession({ wallet: address });
+    } catch {
+      // 사용자가 취소 — 조용히 무시
     } finally {
       setBusy(false);
     }
@@ -89,6 +81,9 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
         {session.wallet ? (
           <span className="k-mono rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[10px] text-[var(--k-muted)]">
             {shortAddress(session.wallet)}
+            {realUsdc !== null && (
+              <span className="ml-1 font-bold text-emerald-700">{formatUsdc(realUsdc)} USDC</span>
+            )}
           </span>
         ) : (
           <button
@@ -98,11 +93,6 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
             {busy ? "…" : "지갑 연결"}
           </button>
         )}
-        {error ? (
-          <span className="max-w-[160px] truncate text-[10px] font-semibold text-red-600" title={error}>
-            {error}
-          </span>
-        ) : null}
         <button
           onClick={logout}
           title="로그아웃"
@@ -134,9 +124,17 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
       </div>
       <div className="mt-2">
         {session.wallet ? (
-          <div className="k-mono flex items-center justify-between rounded-lg bg-black/[0.04] px-2 py-1.5 text-[10.5px]">
-            <span className="text-[var(--k-muted)]">Solana</span>
-            <span className="font-bold">{shortAddress(session.wallet)}</span>
+          <div className="space-y-1">
+            <div className="k-mono flex items-center justify-between rounded-lg bg-black/[0.04] px-2 py-1.5 text-[10.5px]">
+              <span className="text-[var(--k-muted)]">Solana</span>
+              <span className="font-bold">{shortAddress(session.wallet)}</span>
+            </div>
+            <div className="k-mono flex items-center justify-between rounded-lg bg-emerald-50 px-2 py-1.5 text-[10.5px]">
+              <span className="text-emerald-700">USDC · devnet</span>
+              <span className="font-bold text-emerald-800">
+                {realUsdc !== null ? formatUsdc(realUsdc) : balanceFailed ? "—" : "조회 중…"}
+              </span>
+            </div>
           </div>
         ) : (
           <button
@@ -146,11 +144,6 @@ export function IdentityBlock({ variant }: { variant: "sidebar" | "header" }) {
             {busy ? "지갑 연결 중…" : "👛 Phantom 지갑 연결"}
           </button>
         )}
-        {error ? (
-          <p className="mt-1.5 text-[10.5px] font-semibold leading-snug text-red-600">
-            {error}
-          </p>
-        ) : null}
       </div>
     </div>
   );

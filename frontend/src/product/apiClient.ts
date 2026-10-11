@@ -1246,7 +1246,10 @@ function withoutStatus(input: PromotionCreateInput) {
 
 export function apiBaseUrl() {
   if (typeof window !== "undefined") {
-    return "";
+    // Same-origin relative fetch, but prefixed with the app's basePath when the
+    // deployment is served under a path prefix (e.g. thezonebio.com/knot) —
+    // Next's basePath rewriting doesn't cover raw fetch() calls.
+    return process.env.NEXT_PUBLIC_KNOT_BASE_PATH ?? "";
   }
   return (
     process.env.KNOT_API_BASE_URL ??

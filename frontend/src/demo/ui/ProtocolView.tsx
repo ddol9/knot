@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from "react";
 import type { A2AMessage, Negotiation } from "@/demo/engine/types";
+import { withBase } from "./asset";
 
 type AgentCard = {
   name: string;
@@ -22,7 +23,7 @@ type CardState = { live: boolean; card: AgentCard } | null;
 let cardPromise: Promise<CardState> | null = null;
 
 function fetchCard(): Promise<CardState> {
-  cardPromise ??= fetch("/api/knot/a2a")
+  cardPromise ??= fetch(withBase("/api/knot/a2a"))
     .then((r) => (r.ok ? r.json() : null))
     .catch(() => null);
   return cardPromise;

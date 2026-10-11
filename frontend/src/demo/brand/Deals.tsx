@@ -4,13 +4,13 @@
 
 import { useDemo } from "@/demo/engine/store";
 import { AUTOPILOT_CREATOR, creatorById } from "@/demo/engine/script";
+import { RealChainCard } from "@/demo/real/RealChainCard";
 import { Face } from "@/demo/ui/bits";
 import { Badge, SectionLabel } from "@/demo/ui/primitives";
 
 export function Deals() {
   const s = useDemo();
   const deals = s.campaign?.deals ?? [];
-  const live = s.campaign?.live;
 
   const rows = deals.map((d) => {
     const cr = creatorById(d.creatorId);
@@ -57,9 +57,10 @@ export function Deals() {
       <div>
         <div className="text-[18px] font-bold tracking-tight">딜</div>
         <div className="text-[12.5px] text-[var(--k-muted)]">
-          에이전트가 체결한 계약 전체 — 실제 API 모드에서는 지갑 서명 전까지 예치 완료로 표시하지 않아요
+          에이전트가 체결한 계약 전체 — 금액·해시·릴리즈는 온체인 에스크로 기준
         </div>
       </div>
+      <RealChainCard role="brand" />
       <div className="k-card overflow-hidden">
         {rows.length === 0 ? (
           <div className="px-5 py-10 text-center text-[13px] text-[var(--k-muted)]">
@@ -122,9 +123,8 @@ export function Deals() {
         <div className="k-card px-4 py-3">
           <SectionLabel>정산 레일</SectionLabel>
           <div className="mt-1.5 text-[12.5px] text-[var(--k-ink-soft)]">
-            {live?.agreementStatus === "FUNDING_REQUIRED"
-              ? "Agreement 생성 완료 · 브랜드 지갑 서명 후 Solana devnet 에스크로 예치 단계"
-              : "USDC-SPL (Solana devnet) · Anchor 마일스톤 에스크로 · 조건 충족 시 사람 개입 없이 자동 릴리즈"}
+            USDC-SPL (Solana devnet) · Anchor 마일스톤 에스크로 · 조건 충족 시 사람 개입 없이 자동
+            릴리즈
           </div>
         </div>
       )}

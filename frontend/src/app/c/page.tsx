@@ -5,7 +5,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import "@/demo/demo.css";
-import { useAuth } from "@/auth/AuthProvider";
 import { initDemo } from "@/demo/engine/store";
 import { useKnotSession } from "@/demo/auth/session";
 import { CreatorApp } from "@/demo/creator/CreatorApp";
@@ -13,7 +12,6 @@ import { CreatorApp } from "@/demo/creator/CreatorApp";
 export default function CreatorDemoPage() {
   const router = useRouter();
   const session = useKnotSession();
-  const auth = useAuth();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -22,13 +20,10 @@ export default function CreatorDemoPage() {
   }, []);
 
   useEffect(() => {
-    if (!ready || auth.status === "loading") return;
-    if (!session || auth.status !== "authenticated" || auth.context?.account.role !== "CREATOR") {
-      router.replace("/auth?role=creator");
-    }
-  }, [auth.context?.account.role, auth.status, ready, session, router]);
+    if (ready && !session) router.replace("/auth?role=creator");
+  }, [ready, session, router]);
 
-  if (!ready || auth.status === "loading" || !session || auth.context?.account.role !== "CREATOR") {
+  if (!ready || !session) {
     return <div data-knot-demo className="min-h-screen" />;
   }
   return (

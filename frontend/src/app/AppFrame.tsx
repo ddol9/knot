@@ -1,31 +1,48 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { AuthProvider } from "@/auth/AuthProvider";
+import { AuthProvider, useAuth } from "@/auth/AuthProvider";
+import { isDashboardShellPath } from "@/auth/authState";
+import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 
-export function AppFrame({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const isLanding = pathname === "/";
-  const isDemoWorkspace =
-    pathname === "/auth" ||
+/** /b(브랜드)·/c(크리에이터) 라이브 데모는 자체 셸을 쓴다 — 기존 세계관 미적용. */
+function isDemoPath(pathname: string) {
+  return (
     pathname === "/b" ||
     pathname.startsWith("/b/") ||
     pathname === "/c" ||
-    pathname.startsWith("/c/");
+    pathname.startsWith("/c/") ||
+    pathname === "/auth"
+  );
+}
+
+function Shell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const { context } = useAuth();
+  const role = context?.account.role ?? null;
+  const isLanding = pathname === "/";
+  const showSidebar = Boolean(role) && isDashboardShellPath(pathname);
+
+  if (isDemoPath(pathname)) {
+    return <>{children}</>;
+  }
 
   return (
-    <AuthProvider>
-      {!isDemoWorkspace && <TopBar />}
-      <main
-        className={
-          isLanding || isDemoWorkspace
-            ? "w-full flex-1"
-            : "mx-auto w-full max-w-6xl flex-1 px-4 py-8"
-        }
-      >
-        {children}
+    <>
+      <TopBar />
+      <main className={isLanding ? "w-full flex-1" : "mx-auto flex w-full max-w-6xl flex-1 gap-8 px-4 py-8"}>
+        {showSidebar && role ? <Sidebar role={role} /> : null}
+        <div className="min-w-0 flex-1">{children}</div>
       </main>
+    </>
+  );
+}
+
+export function AppFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <AuthProvider>
+      <Shell>{children}</Shell>
     </AuthProvider>
   );
 }

@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useDemo, startScan, hatchDone } from "@/demo/engine/store";
+import { buildBrandProfile } from "@/demo/engine/script";
 import { Yarn } from "@/demo/character/Yarn";
 import { Button, SectionLabel, Badge } from "@/demo/ui/primitives";
 
@@ -101,17 +102,14 @@ export function Onboard() {
   }
 
   /* ---------- 2. 스캔: 실데이터 도착 전엔 전부 shimmer, 도착하면 카드가 하나씩 켜짐 ---------- */
-  const previewUrl = s.scan?.url || url || "https://example.com";
-  const p = s.brand;
+  const previewUrl = s.scan?.url || "moodbeam.kr";
+  const p = s.brand ?? buildBrandProfile(previewUrl);
   const step = s.scan?.step ?? 0;
-  const arrived = !!p;
-  const scanError = s.scan?.error;
+  const arrived = !!s.brand;
 
   if (s.stage === "scanning") {
     const phrase = arrived
       ? "추출 완료 — 브랜드 프로필 구성 중"
-      : scanError
-        ? "브랜드 분석을 완료하지 못했어요"
       : SCAN_PHRASES[(step + tick) % SCAN_PHRASES.length];
     return (
       <div className="flex min-h-screen flex-col items-center justify-center px-6">
@@ -120,7 +118,7 @@ export function Onboard() {
             <Yarn color={s.brand?.color ?? "#a1a1aa"} mood="think" size={72} />
             <div>
               <div className="text-[18px] font-bold">
-                <span className="k-mono k-token">{p?.url ?? previewUrl}</span> 읽는 중…
+                <span className="k-mono">{p.url}</span> 읽는 중…
               </div>
               <AnimatePresence mode="wait">
                 <motion.div
@@ -135,62 +133,35 @@ export function Onboard() {
               </AnimatePresence>
             </div>
           </div>
-          {scanError ? (
-            <div className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
-              <div className="text-[13px] font-bold text-red-700">실제 분석 API가 실패했습니다</div>
-              <p className="mt-1 text-[12.5px] leading-relaxed text-red-600">{scanError}</p>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={() => startScan(previewUrl)}>
-                  다시 분석하기
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.localStorage.removeItem("knot-demo-state-v1");
-                    window.location.href = "/b";
-                  }}
-                  className="rounded-lg border border-red-200 bg-white px-3 text-[12px] font-bold text-red-700"
-                >
-                  URL 다시 입력
-                </button>
-              </div>
-            </div>
-          ) : null}
           <div className="mt-6 grid grid-cols-1 gap-2.5">
             <ScanCard revealed={arrived && step >= 1} label="브랜드">
               <span className="flex items-center gap-2">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                {p ? <img src={p.logo} alt="" width={22} height={22} className="rounded-[6px]" /> : null}
+                <img src={p.logo} alt="" width={22} height={22} className="rounded-[6px]" />
                 <span>
-                  <b>{p?.name}</b> — {p?.tagline}
+                  <b>{p.name}</b> — {p.tagline}
                 </span>
               </span>
             </ScanCard>
             <ScanCard revealed={arrived && step >= 2} label="톤 & 무드">
               <span className="flex gap-1.5">
-                {p?.tone.map((t) => (
+                {p.tone.map((t) => (
                   <Badge key={t}>{t}</Badge>
                 ))}
               </span>
             </ScanCard>
             <ScanCard revealed={arrived && step >= 3} label="제품">
-              {p?.products.map((pr) => pr.name).join(" · ")}
+              {p.products.map((pr) => pr.name).join(" · ")}
             </ScanCard>
             <ScanCard revealed={arrived && step >= 4} label="타깃">
-              {p?.audience}
+              {p.audience}
             </ScanCard>
             <ScanCard revealed={arrived && step >= 5} label="브랜드 컬러">
               <span className="flex items-center gap-2">
-                <span className="h-5 w-5 rounded-md border border-black/10" style={{ background: p?.color }} />
-                <span className="k-mono text-[13px]">{p?.color}</span>
+                <span className="h-5 w-5 rounded-md border border-black/10" style={{ background: p.color }} />
+                <span className="k-mono text-[13px]">{p.color}</span>
               </span>
             </ScanCard>
-            {p?.analysisProvider ? (
-              <div className="rounded-xl border border-[var(--k-line)] bg-white px-4 py-3 text-[12px] font-semibold text-[var(--k-muted)]">
-                분석 출처: {analysisProviderLabel(p.analysisProvider)}
-                {p.analysisFallbackReason ? ` · 제한 사유: ${p.analysisFallbackReason}` : ""}
-              </div>
-            ) : null}
           </div>
         </div>
       </div>
@@ -206,12 +177,12 @@ export function Onboard() {
         transition={{ type: "spring", stiffness: 180, damping: 14 }}
         className="flex flex-col items-center"
       >
-        <Yarn color={p?.color ?? "#d9a441"} mood="happy" size={132} />
+        <Yarn color={p.color} mood="happy" size={132} />
         <h1 className="mt-5 text-[26px] font-bold tracking-tight">
-          {p?.agentName ?? "브랜드 매니저"}가 태어났어요
+          {p.agentName}가 태어났어요
         </h1>
         <p className="mt-2 max-w-sm text-center text-[14.5px] leading-relaxed text-[var(--k-muted)]">
-          {p?.name ?? "브랜드"}의 톤과 제품을 전부 이해한 브랜드 에이전트예요.
+          {p.name}의 톤과 제품을 전부 이해한 브랜드 에이전트예요.
           캠페인 기획부터 협상, 정산까지 — 한도 안에서 스스로 움직입니다.
         </p>
         <Button size="lg" className="mt-7" onClick={hatchDone}>
@@ -220,11 +191,4 @@ export function Onboard() {
       </motion.div>
     </div>
   );
-}
-
-function analysisProviderLabel(provider: string) {
-  if (provider === "vertex-gemini") return "Gemini 사이트 분석";
-  if (provider === "secure-fetch") return "공개 페이지 직접 분석";
-  if (provider === "deterministic") return "URL 기반 제한 분석";
-  return provider;
 }

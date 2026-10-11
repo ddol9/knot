@@ -5,7 +5,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import type { CampaignState, Deal } from "@/demo/engine/types";
 import { useDemo, approveDeals } from "@/demo/engine/store";
-import { creatorById, creatorsForCampaign, HERO_ID, REPORT_SUMMARY } from "@/demo/engine/script";
+import { creatorById, CREATORS, HERO_ID, REPORT_SUMMARY } from "@/demo/engine/script";
 import { openReport } from "@/demo/reportClient";
 import { Yarn, KnotTie, StarBurst, YarnMeter } from "@/demo/character/Yarn";
 import { Button, Badge, SectionLabel, usdc } from "@/demo/ui/primitives";
@@ -117,7 +117,7 @@ function NegotiationLanes({
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-      {creatorsForCampaign(c).map((cr) => {
+      {CREATORS.map((cr) => {
         const n = c.negotiations[cr.id];
         if (!n) return null;
         const last = n.messages.slice(-2);
@@ -168,7 +168,6 @@ function Approval({ c }: { c: CampaignState }) {
   const agreed = Object.values(c.negotiations).filter((n) => n.status === "agreed");
   const blocked = Object.values(c.negotiations).filter((n) => n.status === "blocked");
   const total = agreed.reduce((sum, n) => sum + (n.agreedUsdc ?? 0), 0);
-  const needsFunding = c.live?.agreementStatus === "FUNDING_REQUIRED";
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="k-card px-6 py-6">
       <div className="flex items-center gap-3">
@@ -220,20 +219,11 @@ function Approval({ c }: { c: CampaignState }) {
       ))}
       <div className="mt-5 flex items-center justify-between rounded-xl bg-black/[0.04] px-4 py-3">
         <div className="text-[12.5px] text-[var(--k-muted)]">
-          {needsFunding ? (
-            <>
-              Agreement는 생성됐고, 다음 단계는 브랜드 지갑으로{" "}
-              <b className="k-mono text-[var(--k-ink)]">{usdc(total)}</b>를 Solana devnet 에스크로에 예치하는 것입니다
-            </>
-          ) : (
-            <>
-              승인하면 에스크로에 <b className="k-mono text-[var(--k-ink)]">{usdc(total)}</b>가 잠기고,
-              마일스톤 달성 시 자동 릴리즈됩니다
-            </>
-          )}
+          승인하면 에스크로에 <b className="k-mono text-[var(--k-ink)]">{usdc(total)}</b>가 잠기고,
+          마일스톤 달성 시 자동 릴리즈됩니다
         </div>
         <Button size="lg" onClick={approveDeals}>
-          {needsFunding ? "지갑 서명 단계 확인" : "🪢 승인하고 매듭 묶기"}
+          🪢 승인하고 매듭 묶기
         </Button>
       </div>
     </motion.div>

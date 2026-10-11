@@ -7,6 +7,7 @@ import {
   useDemo,
   resetDemo,
   playSequence,
+  setAutopilot,
 } from "@/demo/engine/store";
 import { autopilotSequence } from "@/demo/engine/script";
 import { Yarn } from "@/demo/character/Yarn";
@@ -135,10 +136,14 @@ export function BrandApp() {
               <span className="text-[12px] font-bold">오토파일럿</span>
               <button
                 onClick={() => {
-                  if (!s.autopilot && !autopilotBusy) playSequence(autopilotSequence(s.brand));
+                  if (s.autopilot) {
+                    setAutopilot(false);
+                    return;
+                  }
+                  if (!autopilotBusy) playSequence(autopilotSequence(s.brand));
                 }}
-                disabled={s.autopilot || autopilotBusy}
-                className={`relative h-5 w-9 rounded-full transition-colors ${
+                disabled={autopilotBusy}
+                className={`relative h-5 w-9 rounded-full transition-colors disabled:opacity-40 ${
                   s.autopilot ? "bg-[var(--k-ink)]" : "bg-black/[0.15]"
                 }`}
               >

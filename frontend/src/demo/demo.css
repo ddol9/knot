@@ -67,15 +67,6 @@ html:has([data-knot-demo]) body::before {
 [data-knot-demo] .k-mono {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   letter-spacing: -0.02em;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-[data-knot-demo] .k-token {
-  min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  word-break: break-all;
 }
 
 /* 카드 기본형 */

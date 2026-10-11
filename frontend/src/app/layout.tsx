@@ -16,7 +16,7 @@ const hand = localFont({
   display: "swap",
 });
 
-/** Pretendard — /b·/c 라이브 데모 셸 전용의 클린 산세리프. */
+/** Pretendard — /b·/c 라이브 데모 셸 전용의 클린 산세리프 (로컬 파일, 네트워크 무관). */
 const pretendard = localFont({
   src: "./fonts/PretendardVariable.woff2",
   variable: "--font-pretendard",

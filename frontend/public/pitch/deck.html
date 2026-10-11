@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KNOT Pitch Deck — Solana Foundation + Google Cloud Korea AI Hackathon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  /* ── 이서윤체: 헤드라인 전용 (손글씨지만 정자체라 가독성 확보) ── */
+  @font-face {
+    font-family: 'LeeSeoyun';
+    src: url('LeeSeoyun.woff2') format('woff2'),
+         url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2202-2@1.0/LeeSeoyun.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+
+  body {
+    background: #fffdf8;
+    color: #0a0a0a;
+    /* 본문은 Pretendard — 심사위원 가독성 최우선 */
+    font-family: 'LeeSeoyun', 'Pretendard Variable', Pretendard, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* 한글은 어절(공백) 단위로만 줄바꿈 — 16:9에서 '크리 / 에이터' 깨짐 방지 */
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  /* ── paper grain (아주 옅게) ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 999;
+    opacity: .022;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .slide {
+    width: 100vw; height: 100vh;
+    position: relative; overflow: hidden;
+    page-break-after: always;
+  }
+
+  /* ── 타이틀: 이서윤체, 좌상단 고정 ── */
+  .slide-title {
+    position: absolute;
+    top: 5.5vh; left: 6vw;
+    font-family: 'LeeSeoyun', cursive;
+    font-weight: 400;
+    font-size: clamp(3.2rem, 5.2vw, 5.2rem);
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    max-width: 88vw;
+    z-index: 10;
+  }
+
+  /* 타이틀 밑줄 강조 */
+  .slide-title::after {
+    content: '';
+    display: block;
+    width: 2.2em;
+    height: 5px;
+    background: #0a0a0a;
+    border-radius: 3px;
+    margin-top: 0.32em;
+  }
+
+  .slide-content {
+    position: absolute;
+    top: 24vh; left: 6vw; right: 6vw; bottom: 9vh;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+  }
+
+  /* ── 표지/매니페스토형 슬라이드: 화면 정중앙 정렬 ── */
+  .slide.center { display: flex; align-items: center; justify-content: center; }
+  .slide.center .slide-title { position: static; text-align: center; }
+  .slide.center .slide-title::after { display: none; }
+  /* .slide-content 는 기본이 absolute(top:24vh) 라 중앙 슬라이드에선 위로 쏠린다 → static 으로 되돌림 */
+  .slide.center .slide-content {
+    position: static;
+    top: auto; left: auto; right: auto; bottom: auto;
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* ── Typography ── */
+  h1, h2, h3, h4 {
+    text-wrap: balance;
+    font-family: 'LeeSeoyun', cursive;
+    font-weight: 400;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  h1 { font-size: clamp(4.6rem, 9.5vw, 8.4rem); }
+  h2 { font-size: clamp(3.4rem, 5.8vw, 5.8rem); }
+  h3 { font-size: clamp(2rem, 3.6vw, 3.2rem); }
+
+  .subtitle {
+    font-size: clamp(1.6rem, 2.7vw, 2.3rem);
+    color: #333; margin-top: 1rem;
+    line-height: 1.6;
+    font-weight: 400;
+  }
+
+  .en { font-family: 'Caveat', cursive; }
+  b, strong { font-weight: 700; color: #0a0a0a; }
+
+  /* ── Bullets ── */
+  ul.bullets {
+    list-style: none;
+    font-size: clamp(1.6rem, 2.6vw, 2.25rem);
+    line-height: 1.6;
+    max-width: 90%;
+    font-weight: 400;
+  }
+  ul.bullets li {
+    margin: 1.05em 0;
+    padding-left: 1.05em;
+    position: relative;
+  }
+  ul.bullets li::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0.55em;
+    width: 9px; height: 9px;
+    background: #0a0a0a;
+    border-radius: 50%;
+  }
+  ul.bullets li .sub {
+    font-family: 'Pretendard Variable', Pretendard, sans-serif;
+    display: block;
+    font-size: 0.76em;
+    color: #666;
+    margin-top: 0.15em;
+  }
+
+  /* ── Sketch box (덜 꼬불거리게) ── */
+  .sketchbox {
+    text-wrap: balance;
+    border: 2.5px solid #0a0a0a;
+    border-radius: 14px;
+    padding: 1.8rem 2.2rem;
+    background: #fffdf8;
+    margin: 1rem 0;
+    font-size: clamp(1.55rem, 2.5vw, 2.15rem);
+    line-height: 1.75;
+  }
+  .sketchbox.accent { border-color: #b00; color: #b00; }
+  .sketchbox.soft { border-width: 2px; border-color: #bbb; }
+
+  .manifesto-line {
+    text-wrap: balance;
+    font-size: clamp(1.8rem, 3.1vw, 2.8rem);
+    text-align: center; color: #444; line-height: 1.55;
+  }
+
+  /* ── Flow diagram ── */
+  .flow-horizontal {
+    display: flex; align-items: center; justify-content: center;
+    gap: 1vw; flex-wrap: wrap;
+    font-size: clamp(1.4rem, 2.3vw, 2rem);
+  }
+  .flow-horizontal .step {
+    padding: 0.62em 1.05em;
+    border: 2.5px solid #0a0a0a;
+    border-radius: 12px;
+    background: #fffdf8;
+    white-space: nowrap;
+  }
+  .flow-horizontal .step.hot { border-color: #b00; color: #b00; font-weight: 700; }
+  .flow-horizontal .step.cool { border-color: #0a7d38; color: #0a7d38; font-weight: 700; }
+  .flow-horizontal .arrow { font-size: 1.5em; color: #999; }
+
+  .visual { max-width: 600px; max-height: 400px; }
+  .visual svg { width: 100%; height: 100%; }
+
+  .draw path, .draw line, .draw circle, .draw ellipse, .draw polyline, .draw rect {
+    fill: none; stroke: #0a0a0a;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  .two-col {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 3.5vw; width: 100%; align-items: center;
+  }
+  .two-col.top { align-items: start; }
+
+  /* ── Column card (문제 슬라이드용) ── */
+  .col-card {
+    border: 2.5px solid #0a0a0a;
+    border-radius: 14px;
+    padding: 1.6rem 1.9rem 1.9rem;
+    background: #fffdf8;
+    height: 100%;
+  }
+  .col-card h3 { margin-bottom: 0.5rem; }
+  .col-card ul.bullets { font-size: clamp(1.45rem, 2.3vw, 2rem); max-width: 100%; }
+  .col-card ul.bullets li { margin: 0.85em 0; }
+
+  /* ── Agent cards ── */
+  .agent-cards { display: flex; gap: 2.5vw; justify-content: center; width: 100%; }
+  .agent-card { text-align: center; width: min(320px, 42vw); }
+  .agent-card svg { width: 100%; max-height: 190px; }
+  .agent-card h3 { font-size: clamp(1.7rem, 2.9vw, 2.4rem); margin-top: 0.5rem; }
+  .agent-card p { color: #555; font-size: clamp(1.3rem, 2.2vw, 1.8rem); line-height: 1.55; }
+
+  /* ── Table ── */
+  table {
+    border-collapse: collapse;
+    font-size: clamp(1.5rem, 2.4vw, 2.05rem);
+    width: 92%; max-width: 960px;
+  }
+  table td { font-family: 'Pretendard Variable', Pretendard, sans-serif; }
+  table th, table td { border: 2px solid #0a0a0a; padding: 0.72rem 1.2rem; text-align: left; }
+  table th {
+    background: #0a0a0a; color: #fffdf8;
+    font-family: 'LeeSeoyun', cursive;
+    font-size: 1.1em;
+  }
+  table td:first-child { font-weight: 700; width: 40%; }
+
+  /* ── DM bubbles ── */
+  .dm-pile { position: relative; width: 100%; height: 100%; }
+  .dm {
+    position: absolute;
+    font-size: clamp(1.25rem, 2.1vw, 1.8rem);
+    padding: 0.65rem 1.15rem;
+    border: 2px solid #0a0a0a;
+    background: #fffdf8;
+    border-radius: 16px 16px 16px 4px;
+    white-space: nowrap;
+  }
+  .dm.dead { color: #999; border-color: #c4c4c4; text-decoration: line-through; }
+  .dm.punch {
+    border-width: 3.5px; border-color: #b00; color: #b00;
+    font-weight: 700;
+    font-size: clamp(1.6rem, 2.7vw, 2.3rem);
+    text-decoration: none;
+    transform: rotate(-3deg);
+  }
+
+  /* ── Demo link ── */
+  .demo-link {
+    padding: 2.2rem 3rem;
+    border: 3.5px solid #b00; border-radius: 14px;
+    background: #fffdf8; text-align: center;
+    font-size: clamp(1.7rem, 2.9vw, 2.5rem);
+    color: #b00; font-family: 'Caveat', cursive; font-weight: 700;
+    text-decoration: none; display: inline-block;
+  }
+
+  /* ── Metric tiles (트랙션) ── */
+  .metrics { display: flex; gap: 2.2vw; justify-content: center; width: 100%; flex-wrap: wrap; }
+  .metric {
+    border: 2.5px solid #0a0a0a; border-radius: 14px;
+    padding: 1.9rem 2.2rem; text-align: center;
+    min-width: 200px; background: #fffdf8;
+  }
+  .metric .num {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(3.4rem, 6vw, 5.4rem);
+    line-height: 1; display: block;
+  }
+  .metric .lbl { font-size: clamp(1.25rem, 2vw, 1.65rem); color: #555; margin-top: 0.7rem; display: block; }
+  .metric.hot { border-color: #b00; }
+  .metric.hot .num { color: #b00; }
+
+  /* ── Logo row ── */
+  .logo-row { display: flex; gap: 4vw; align-items: center; justify-content: center; width: 100%; }
+  /* 로고마다 원본 비율이 달라서 — 동일한 시각 면적 박스에 맞춰 정규화 */
+  .logo-row .logo-box {
+    height: clamp(90px, 13vh, 150px);
+    width: clamp(210px, 22vw, 300px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .logo-row img { max-height: 100%; max-width: 100%; width: auto; object-fit: contain; }
+  .logo-row .logo-item { text-align: center; }
+  .logo-row .logo-item span { display: block; margin-top: 0.7rem; font-size: clamp(1.05rem, 1.7vw, 1.4rem); color: #777; }
+  .logo-row .logo-item .who { margin-top: 0.3rem; font-size: clamp(0.95rem, 1.5vw, 1.15rem); color: #b00; font-weight: 700; }
+  .pain-bubble {
+    margin-top: 1.1rem;
+    padding: 1rem 1.3rem;
+    border: 2px solid #0a0a0a;
+    border-radius: 14px 14px 14px 4px;
+    background: #fffdf8;
+    font-size: clamp(1.02rem, 1.5vw, 1.28rem);
+    line-height: 1.55;
+    text-align: left;
+    max-width: 260px;
+  }
+
+  /* ── Team ── */
+  .team-row { display: flex; gap: 3.5vw; justify-content: center; width: 100%; }
+  .team-member { text-align: center; }
+  .team-member svg { width: clamp(110px, 15vw, 175px); height: auto; }
+  .team-member h3 { margin-top: 0.55rem; font-size: clamp(1.7rem, 2.8vw, 2.4rem); }
+  .team-member p { color: #555; font-size: clamp(1.2rem, 2vw, 1.65rem); line-height: 1.55; margin-top: 0.2rem; }
+  .team-cred { color: #999; font-size: clamp(0.82rem, 1.25vw, 1rem); line-height: 1.5; margin-top: 0.4rem; max-width: 220px; margin-left: auto; margin-right: auto; }
+
+  /* ── Footnote ── */
+  .footnote {
+    text-wrap: pretty;
+    font-family: 'Pretendard Variable', Pretendard, sans-serif;
+    font-size: clamp(1.05rem, 1.6vw, 1.35rem);
+    color: #8a8a8a; margin-top: 1.6rem; text-align: center; line-height: 1.5;
+  }
+
+  .slide-footer {
+    position: absolute; bottom: 3vh; left: 50%;
+    transform: translateX(-50%);
+    font-size: clamp(1rem, 1.6vw, 1.35rem);
+    color: #999; font-family: 'Caveat', cursive;
+  }
+  .slide-number {
+    position: absolute; bottom: 3vh; right: 6vw;
+    font-size: clamp(1rem, 1.6vw, 1.35rem);
+    color: #bbb; font-family: 'Caveat', cursive;
+  }
+  .nav-hint {
+    position: fixed; top: 2vh; right: 3vw;
+    font-size: clamp(0.9rem, 1.4vw, 1.2rem);
+    color: #bbb; font-family: 'Caveat', cursive; z-index: 1000;
+  }
+
+
+
+
+  /* ═══ 문제 3가지: 아이콘 카드 ═══ */
+  .cost-row { display:flex; gap:2.4vw; width:100%; justify-content:center; align-items:stretch; }
+  .col-card.cost { flex:1; max-width:390px; text-align:center; padding-top:2rem; }
+  .cost-ico { width:clamp(105px,12.5vw,160px); height:auto; margin-bottom:1rem; }
+  .col-card.cost h3 { margin-bottom:.6rem; }
+  .col-card.cost p { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1.2rem,1.95vw,1.7rem); line-height:1.7; color:#444; }
+  .footnote.big { font-size:clamp(1.18rem,1.9vw,1.65rem); color:#555; margin-top:2.4rem; max-width:1100px; }
+
+  /* ═══ 양쪽 모두의 문제 ═══ */
+  .bothsides { display:grid; grid-template-columns:1fr auto 1fr; gap:.85rem 2.4vw;
+    align-items:center; width:100%; max-width:1240px; }
+  .bs-head { font-family:'LeeSeoyun',cursive; font-size:clamp(1.5rem,2.5vw,2.15rem);
+    text-align:center; padding-bottom:.3rem; }
+  .bs-head.bs-mid { color:#b00; }
+  .bs-pain { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1.15rem,1.85vw,1.6rem); line-height:1.6; color:#444; text-align:center;
+    border:2px solid #d8d3c6; border-radius:12px; padding:.85rem 1rem; background:#fffdf8; }
+  .bs-node { font-family:'LeeSeoyun',cursive; font-size:clamp(1.5rem,2.5vw,2.15rem);
+    min-width:clamp(155px,17vw,235px); text-align:center; border:3px solid #b00; color:#b00;
+    border-radius:14px; padding:.72rem 1.3rem; background:#fffdf8; position:relative; }
+  .bs-node::before,.bs-node::after { content:''; position:absolute; top:50%;
+    width:1.7vw; height:3px; background:#cdc7b9; }
+  .bs-node::before { left:-1.9vw; } .bs-node::after { right:-1.9vw; }
+  .bs-node .n { display:inline-block; margin-right:.35em; background:#b00; color:#fffdf8;
+    width:1.25em; height:1.25em; line-height:1.3em; border-radius:50%; font-size:.78em; }
+  .slide.is-active .bs-node { animation:popIn .55s cubic-bezier(.2,1.3,.4,1) both; }
+  .slide.is-active .bs-pain { animation:riseIn .5s cubic-bezier(.2,.7,.3,1) both; }
+  .slide.is-active .bothsides>*:nth-child(-n+3){animation-delay:.15s}
+  .slide.is-active .bothsides>*:nth-child(n+4):nth-child(-n+6){animation-delay:.40s}
+  .slide.is-active .bothsides>*:nth-child(n+7):nth-child(-n+9){animation-delay:.62s}
+  .slide.is-active .bothsides>*:nth-child(n+10){animation-delay:.84s}
+
+  /* ═══ 작동 방식: 실행 흐름 ═══ */
+  .runner { position:relative; width:100%; max-width:1280px; padding:2.2rem 0 1rem; }
+  .runner .rail { position:absolute; left:5%; right:5%; top:44%; height:4px;
+    background:#e4dfd2; border-radius:2px; }
+  .runner .pulse { position:absolute; top:50%; left:0; width:18px; height:18px;
+    margin:-9px 0 0 -9px; border-radius:50%; background:#b00; }
+  .stations { display:flex; justify-content:space-between; position:relative; z-index:2; }
+  .st { text-align:center; width:15%; }
+  .st .box { font-family:'LeeSeoyun',cursive; font-size:clamp(1.05rem,1.7vw,1.48rem);
+    line-height:1.35; border:2.5px solid #cfc9bb; border-radius:14px; background:#fffdf8;
+    padding:.85rem .4rem; }
+  .st.hot .box { border-color:#f0b9b9; } .st.cool .box { border-color:#b3ddc6; }
+  .st .note { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(.95rem,1.42vw,1.24rem); line-height:1.5; color:#666; margin-top:.6rem; opacity:0; }
+  .st .note.pay { color:#b00; font-weight:600; }
+  .runner .coin { position:absolute; top:44%; left:0; opacity:0; font-family:'LeeSeoyun',cursive;
+    font-size:clamp(1.05rem,1.75vw,1.55rem); color:#0a7d38; border:2.5px solid #0a7d38;
+    border-radius:999px; padding:.18em .8em; background:#fffdf8; }
+  .sketchbox.human { margin-top:2.6rem; border-color:#0a7d38; }
+  @keyframes railPulse { 0%{left:7%;box-shadow:0 0 0 0 rgba(187,0,0,.5)} 100%{left:93%;box-shadow:0 0 0 15px rgba(187,0,0,0)} }
+  @keyframes stLight { 0%,100%{border-color:#cfc9bb;transform:none} 12%,26%{border-color:#0a0a0a;transform:translateY(-9px) scale(1.06)} }
+  @keyframes stLightHot { 0%,100%{border-color:#f0b9b9;transform:none} 12%,26%{border-color:#b00;transform:translateY(-9px) scale(1.06)} }
+  @keyframes stLightCool { 0%,100%{border-color:#b3ddc6;transform:none} 12%,26%{border-color:#0a7d38;transform:translateY(-9px) scale(1.06)} }
+  @keyframes noteShow { 0%,8%{opacity:0;transform:translateY(8px)} 16%,30%{opacity:1;transform:none} 44%,100%{opacity:.32;transform:none} }
+  @keyframes coinFly { 0%,62%{opacity:0;left:64%} 68%{opacity:1;left:64%} 92%{opacity:1;left:87%} 100%{opacity:0;left:89%} }
+  .slide.is-active .runner .pulse { animation:railPulse 7.2s cubic-bezier(.5,0,.5,1) .4s infinite; }
+  .slide.is-active .st .box { animation:stLight 7.2s linear infinite; animation-delay:calc(.4s + var(--i)*1.05s); }
+  .slide.is-active .st.hot .box { animation-name:stLightHot; }
+  .slide.is-active .st.cool .box { animation-name:stLightCool; }
+  .slide.is-active .st .note { animation:noteShow 7.2s linear infinite; animation-delay:calc(.4s + var(--i)*1.05s); }
+  .slide.is-active .runner .coin { animation:coinFly 7.2s ease-in-out .4s infinite; }
+
+  /* ═══ 보너스 게이지 ═══ */
+  .gauge { width:100%; max-width:1120px; }
+  .gauge-track { position:relative; height:clamp(46px,6.4vh,66px); border:3px solid #0a0a0a;
+    border-radius:999px; background:#fffdf8; }
+  .gauge-fill { position:absolute; top:4px; bottom:4px; left:4px; width:2%;
+    border-radius:999px; background:#0a7d38; }
+  .gauge-goal { position:absolute; top:-10px; bottom:-10px; left:68%; border-left:3px dashed #b00; }
+  .gauge-goal span { position:absolute; top:-2.1em; left:50%; transform:translateX(-50%);
+    font-family:'LeeSeoyun',cursive; color:#b00; white-space:nowrap; font-size:clamp(1.05rem,1.7vw,1.5rem); }
+  .gauge-head { position:absolute; top:50%; left:2%; transform:translate(-50%,-50%);
+    font-family:'LeeSeoyun',cursive; font-size:clamp(1.08rem,1.78vw,1.55rem); }
+  .gauge-head .cnt { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    opacity:0; white-space:nowrap; background:#0a0a0a; color:#fffdf8; border-radius:999px; padding:.18em .7em; }
+  .gauge-cap { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1.05rem,1.62vw,1.4rem); color:#777; text-align:center; margin-top:1.5rem; }
+  .payouts { display:flex; gap:2.4vw; margin-top:2.4rem; justify-content:center; width:100%; }
+  .payout { border:3px solid #0a0a0a; border-radius:16px; padding:1.2rem 2.2rem; text-align:center;
+    min-width:clamp(225px,25vw,325px); background:#fffdf8; }
+  .payout .pk { display:block; font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1rem,1.52vw,1.3rem); color:#777; }
+  .payout .pv { display:block; font-family:'LeeSeoyun',cursive;
+    font-size:clamp(2.1rem,3.8vw,3.2rem); line-height:1.15; margin:.12em 0; }
+  .payout .ps { display:block; font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(.96rem,1.48vw,1.24rem); color:#777; }
+  .payout.bonus { border-color:#0a7d38; } .payout.bonus .pv,.payout.bonus .pk { color:#0a7d38; }
+  @keyframes gaugeGrow { 0%{width:2%} 55%{width:66%} 78%,100%{width:93%} }
+  @keyframes headMove { 0%{left:2%} 55%{left:66%} 78%,100%{left:93%} }
+  @keyframes cShow { 0%,3%{opacity:0} 8%,22%{opacity:1} 27%,100%{opacity:0} }
+  @keyframes goalHit { 0%,54%{border-color:#b00} 60%,100%{border-color:#0a7d38} }
+  @keyframes bonusPop { 0%,58%{opacity:0;transform:translateY(18px) scale(.9)} 70%,100%{opacity:1;transform:none} }
+  @keyframes basePop { 0%,40%{opacity:0;transform:translateY(18px) scale(.9)} 52%,100%{opacity:1;transform:none} }
+  .slide.is-active .gauge-fill { animation:gaugeGrow 5.4s cubic-bezier(.4,.1,.3,1) .4s infinite; }
+  .slide.is-active .gauge-head { animation:headMove 5.4s cubic-bezier(.4,.1,.3,1) .4s infinite; }
+  .slide.is-active .gauge-goal { animation:goalHit 5.4s linear .4s infinite; }
+  .slide.is-active .gauge-head .c1{animation:cShow 5.4s linear .4s infinite}
+  .slide.is-active .gauge-head .c2{animation:cShow 5.4s linear 1.75s infinite}
+  .slide.is-active .gauge-head .c3{animation:cShow 5.4s linear 3.1s infinite}
+  .slide.is-active .gauge-head .c4{animation:cShow 5.4s linear 4.2s infinite}
+  .slide.is-active .payout.base{animation:basePop 5.4s ease-out .4s infinite}
+  .slide.is-active .payout.bonus{animation:bonusPop 5.4s ease-out .4s infinite}
+
+  /* ═══ 정산 비교 그래프 (업계 평균 vs KNOT) ═══ */
+  .cmp-chart { width:100%; max-width:1100px; }
+  .cmp-row { display:flex; align-items:center; gap:1.2rem; margin-bottom:2rem; }
+  .cmp-label { flex:0 0 clamp(120px,15vw,190px); text-align:right;
+    font-family:'Pretendard Variable',Pretendard,sans-serif; font-weight:600;
+    font-size:clamp(1.02rem,1.55vw,1.28rem); color:#555; line-height:1.35; }
+  .cmp-track { position:relative; flex:1; display:flex; align-items:center;
+    height:clamp(58px,7.6vh,82px); border:3px solid #0a0a0a; border-radius:16px;
+    background:#fffdf8; overflow:hidden; }
+  .cmp-fill { height:100%; display:flex; align-items:center; flex-shrink:0; }
+  .cmp-fill.bad { width:100%; background:#f6dbd6; justify-content:flex-end; padding-right:1.1rem; }
+  .cmp-fill.good { width:clamp(10px,2.4%,26px); background:#0a7d38; }
+  .cmp-num { font-family:'LeeSeoyun',cursive; font-size:clamp(1.28rem,2.05vw,1.75rem); white-space:nowrap; }
+  .cmp-fill.bad .cmp-num { color:#b00; }
+  .cmp-break { flex-shrink:0; width:22px; height:68%; margin:0 .35rem; }
+  .cmp-num-out { font-family:'LeeSeoyun',cursive; font-size:clamp(1.5rem,2.6vw,2.15rem); color:#0a7d38; white-space:nowrap; }
+  .cmp-ratio { text-align:center; margin-top:1.8rem; font-family:'LeeSeoyun',cursive;
+    font-size:clamp(1.45rem,2.5vw,2.05rem); color:#0a0a0a; }
+  .cmp-ratio b { color:#0a7d38; }
+  .slide.is-active .cmp-fill.bad { animation: cmpBad .9s cubic-bezier(.2,.7,.3,1) both; animation-delay:.25s; }
+  .slide.is-active .cmp-fill.good { animation: cmpGood .5s cubic-bezier(.2,.7,.3,1) both; animation-delay:.95s; }
+  .slide.is-active .cmp-ratio { animation: riseIn .6s cubic-bezier(.2,.7,.3,1) both; animation-delay:1.25s; }
+  @keyframes cmpBad { from{width:0%} to{width:100%} }
+  @keyframes cmpGood { from{width:0} }
+
+  /* ═══ 왜 블록체인 / 왜 솔라나 ═══ */
+  .why-split { display:grid; grid-template-columns:1fr 1fr; gap:3.2vw; width:100%; align-items:start; }
+  .why-lab { font-family:'LeeSeoyun',cursive; font-size:clamp(1.4rem,2.3vw,2rem); color:#999;
+    border-bottom:3px solid #ddd8cc; display:inline-block; padding-bottom:.15em; margin-bottom:1rem; }
+  .why-lab.on { color:#0a7d38; border-color:#0a7d38; }
+  .why-ico { width:100%; max-width:390px; height:auto; margin-bottom:1rem; }
+  .why-txt { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1.12rem,1.8vw,1.55rem); line-height:1.75; color:#444; }
+  .why-kick { font-family:'LeeSeoyun',cursive; font-size:clamp(1.28rem,2.05vw,1.8rem);
+    margin-top:1rem; padding:.55em .9em; border-radius:12px; border:2.5px solid; }
+  .why-kick.bad{color:#b00;border-color:#f0b9b9} .why-kick.good{color:#0a7d38;border-color:#b3ddc6}
+  .ev-row { display:flex; gap:1.6vw; margin-top:2.2rem; width:100%; justify-content:center; }
+  .ev { border:2.5px solid #0a0a0a; border-radius:13px; padding:.9rem 1.4rem; text-align:center;
+    flex:1; max-width:340px; background:#fffdf8; }
+  .ev img { height:clamp(20px,2.4vh,30px); width:auto; max-width:120px; object-fit:contain; margin-bottom:.4rem; display:block; margin-inline:auto; }
+  .ev b { display:block; font-family:'LeeSeoyun',cursive; font-size:clamp(1.22rem,1.95vw,1.7rem); }
+  .ev span { display:block; font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(.96rem,1.48vw,1.28rem); color:#666; margin-top:.3em; line-height:1.5; }
+  .sol-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:2.2vw; width:100%; align-items:stretch; }
+  .sol-card { border:2.5px solid #cfc9bb; border-radius:16px; padding:1.6rem 1.5rem;
+    background:#fffdf8; text-align:center; }
+  .sol-card.hi { border-color:#0a7d38; border-width:3.5px; }
+  .sol-logo { height:clamp(34px,4.6vh,58px); width:auto; margin-bottom:.7rem; }
+  .sol-n { font-family:'LeeSeoyun',cursive; font-size:clamp(1.3rem,2.15vw,1.9rem); margin-bottom:.65rem; line-height:1.3; }
+  .sol-card.hi .sol-n { color:#0a7d38; font-size:clamp(1.75rem,2.9vw,2.5rem); }
+  .sol-card p { font-family:'Pretendard Variable',Pretendard,sans-serif;
+    font-size:clamp(1.02rem,1.6vw,1.38rem); line-height:1.7; color:#555; }
+  .proof { margin-top:2.4rem; text-align:center; width:100%; }
+  .pf-k { font-family:'LeeSeoyun',cursive; font-size:clamp(1.18rem,1.88vw,1.62rem); color:#777; }
+  .pf-row { display:flex; gap:.7rem; flex-wrap:wrap; justify-content:center; margin-top:1rem; }
+  .pf { font-family:'Pretendard Variable',Pretendard,sans-serif; font-size:clamp(1rem,1.52vw,1.3rem);
+    border:2px solid #0a7d38; color:#0a7d38; border-radius:999px; padding:.35em 1em; }
+  .slide.is-active .ev,.slide.is-active .sol-card,.slide.is-active .pf {
+    animation:popIn .55s cubic-bezier(.2,1.2,.4,1) both; }
+  .slide.is-active .ev:nth-child(1),.slide.is-active .sol-card:nth-child(1){animation-delay:.35s}
+  .slide.is-active .ev:nth-child(2),.slide.is-active .sol-card:nth-child(2){animation-delay:.5s}
+  .slide.is-active .ev:nth-child(3),.slide.is-active .sol-card:nth-child(3){animation-delay:.65s}
+  .slide.is-active .pf:nth-child(1){animation-delay:.7s} .slide.is-active .pf:nth-child(2){animation-delay:.8s}
+  .slide.is-active .pf:nth-child(3){animation-delay:.9s} .slide.is-active .pf:nth-child(4){animation-delay:1s}
+  .slide.is-active .pf:nth-child(5){animation-delay:1.1s}
+
+  /* ═══ 팀 IP 캐릭터 ═══ */
+  .team-member .ip { width:clamp(140px,17vw,205px); height:auto; border-radius:20px; display:block; margin:0 auto; }
+  .slide.is-active .team-member .ip { animation:popIn .6s cubic-bezier(.2,1.3,.4,1) both; }
+
+  /* 콘텐츠가 많은 슬라이드는 상단 여백 축소 */
+  .slide.tight .slide-content { top: 19vh; bottom: 6vh; }
+
+  .tag-logo { height: clamp(20px, 2.5vh, 30px); width: auto; display: block; }
+
+  /* ═══ 기술스택 칩 로고 ═══ */
+  .chip.with-logo { display:inline-flex; align-items:center; gap:.45em; }
+  .chip.with-logo img { height:1.25em; width:auto; }
+
+  /* ── 표지: 랜딩 페이지 톤 ── */
+  .slide.cover .slide-footer { color: #cfcabb; }
+  .cover-word {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(6rem, 13vw, 12rem);
+    line-height: .95;
+    text-align: center;
+    letter-spacing: -0.02em;
+  }
+  .cover-tag {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(1.9rem, 3.3vw, 3rem);
+    text-align: center;
+    margin-top: 1.8rem;
+    letter-spacing: .01em;
+  }
+  .cover-sub {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(1.3rem, 2.2vw, 1.95rem);
+    text-align: center;
+    color: #8d8d8d;
+    margin-top: .9rem;
+    letter-spacing: .02em;
+  }
+  .doodle {
+    position: absolute;
+    width: clamp(46px, 5vw, 76px);
+    height: auto;
+    opacity: .75;
+    pointer-events: none;
+  }
+  .doodle path, .doodle circle { fill: none; stroke: #3a3a3a; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ── 손그림 흔들림 (랜딩과 동일) ── */
+  .squig-1 { filter: url(#squiggle-1); }
+  .squig-2 { filter: url(#squiggle-2); }
+  .d-star   { top: 10vh; left: 9vw; }
+  .d-spiral { top: 16vh; right: 10vw; }
+  .d-smile  { bottom: 9vh;  left: 15vw; }
+  .slide.cover.is-active .doodle { animation: popIn .7s cubic-bezier(.2,.7,.3,1) both; }
+  .slide.cover.is-active .d-star   { animation-delay: .55s; }
+  .slide.cover.is-active .d-spiral { animation-delay: .70s; }
+  .slide.cover.is-active .d-smile  { animation-delay: .85s; }
+  .cover-knot .knot-line { stroke-dasharray: 1000; stroke-dashoffset: 1000; }
+  .cover-knot circle, .cover-knot text { opacity: 0; }
+  .slide.cover.is-active .cover-knot .knot-line {
+    animation: knotDraw 1.3s cubic-bezier(.65,.05,.36,1) both;
+    animation-delay: .1s;
+  }
+  .slide.cover.is-active .cover-knot circle,
+  .slide.cover.is-active .cover-knot text { animation: fadeIn .5s both; animation-delay: 1.3s; }
+  .slide.cover.is-active .cover-word { animation: riseIn .8s cubic-bezier(.2,.7,.3,1) both; animation-delay: 1.55s; }
+  .slide.cover.is-active .cover-tag  { animation: riseIn .7s cubic-bezier(.2,.7,.3,1) both; animation-delay: 1.75s; }
+  .slide.cover.is-active .cover-sub  { animation: riseIn .7s cubic-bezier(.2,.7,.3,1) both; animation-delay: 1.9s; }
+
+  /* ══ 애니메이션 ══ */
+  @keyframes riseIn { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes popIn  { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: none; } }
+  @keyframes drawIn { to { stroke-dashoffset: 0; } }
+  @keyframes knotDraw { to { stroke-dashoffset: 0; } }
+
+  /* 활성 슬라이드의 요소들이 순차 등장 */
+  .slide.is-active .slide-title { animation: riseIn .55s cubic-bezier(.2,.7,.3,1) both; }
+  .slide.is-active .slide-content > *,
+  .slide.is-active .slide-title > * {
+    animation: riseIn .6s cubic-bezier(.2,.7,.3,1) both;
+  }
+  .slide.is-active .slide-content > *:nth-child(1) { animation-delay: .10s; }
+  .slide.is-active .slide-content > *:nth-child(2) { animation-delay: .22s; }
+  .slide.is-active .slide-content > *:nth-child(3) { animation-delay: .34s; }
+  .slide.is-active .slide-content > *:nth-child(4) { animation-delay: .46s; }
+  .slide.is-active .slide-content > *:nth-child(5) { animation-delay: .58s; }
+
+  /* 플로우 스텝 / 카드 / 메트릭은 하나씩 톡톡 */
+  .slide.is-active .flow-horizontal .step,
+  .slide.is-active .flow-horizontal .arrow,
+  .slide.is-active .metric,
+  .slide.is-active .col-card,
+  .slide.is-active .edge,
+  .slide.is-active .logo-item,
+  .slide.is-active .team-member,
+  .slide.is-active .cond .row,
+  .slide.is-active .layer { animation: popIn .5s cubic-bezier(.2,.7,.3,1) both; }
+  .slide.is-active .flow-horizontal :nth-child(1),
+  .slide.is-active .metric:nth-child(1), .slide.is-active .edge:nth-child(1),
+  .slide.is-active .logo-item:nth-child(1), .slide.is-active .team-member:nth-child(1),
+  .slide.is-active .cond .row:nth-child(1) { animation-delay: .30s; }
+  .slide.is-active .flow-horizontal :nth-child(2),
+  .slide.is-active .metric:nth-child(2), .slide.is-active .edge:nth-child(2),
+  .slide.is-active .logo-item:nth-child(2), .slide.is-active .team-member:nth-child(2),
+  .slide.is-active .cond .row:nth-child(2) { animation-delay: .42s; }
+  .slide.is-active .flow-horizontal :nth-child(3),
+  .slide.is-active .metric:nth-child(3), .slide.is-active .edge:nth-child(3),
+  .slide.is-active .logo-item:nth-child(3), .slide.is-active .team-member:nth-child(3),
+  .slide.is-active .cond .row:nth-child(3) { animation-delay: .54s; }
+  .slide.is-active .flow-horizontal :nth-child(4),
+  .slide.is-active .metric:nth-child(4), .slide.is-active .edge:nth-child(4) { animation-delay: .66s; }
+  .slide.is-active .flow-horizontal :nth-child(5) { animation-delay: .78s; }
+  .slide.is-active .flow-horizontal :nth-child(6) { animation-delay: .86s; }
+  .slide.is-active .flow-horizontal :nth-child(7) { animation-delay: .94s; }
+  .slide.is-active .stack .layer:nth-child(1) { animation-delay: .20s; }
+  .slide.is-active .stack .layer:nth-child(3) { animation-delay: .38s; }
+  .slide.is-active .stack .layer:nth-child(5) { animation-delay: .56s; }
+  .slide.is-active .stack .layer:nth-child(7) { animation-delay: .74s; }
+  .slide.is-active .stack .layer:nth-child(9) { animation-delay: .92s; }
+  .slide.is-active .stack .down { animation: fadeIn .4s both; animation-delay: .6s; }
+
+  /* DM 말풍선 우수수 */
+  .slide.is-active .dm { animation: riseIn .5s cubic-bezier(.2,.7,.3,1) both; }
+  .slide.is-active .dm:nth-of-type(1) { animation-delay: .25s; }
+  .slide.is-active .dm:nth-of-type(2) { animation-delay: .40s; }
+  .slide.is-active .dm:nth-of-type(3) { animation-delay: .55s; }
+  .slide.is-active .dm:nth-of-type(4) { animation-delay: .70s; }
+  .slide.is-active .dm:nth-of-type(5) { animation-delay: .85s; }
+  .slide.is-active .dm:nth-of-type(6) { animation-delay: 1.00s; }
+  .slide.is-active .dm.punch { animation: popIn .55s cubic-bezier(.2,1.5,.4,1) both; animation-delay: 1.35s; }
+
+  /* 선 그려지는 효과 */
+  .slide.is-active .draw path,
+  .slide.is-active .draw line,
+  .slide.is-active .draw circle,
+  .slide.is-active .draw rect { animation: fadeIn .7s both; animation-delay: .3s; }
+
+  @media print {
+    .slide .slide-title, .slide .slide-content > *, .slide .slide-title > *,
+    .slide .flow-horizontal .step, .slide .flow-horizontal .arrow, .slide .metric,
+    .slide .col-card, .slide .edge, .slide .logo-item, .slide .team-member,
+    .slide .cond .row, .slide .layer, .slide .dm, .slide .stack .down,
+    .slide .draw path, .slide .draw line, .slide .draw circle, .slide .draw rect,
+    .slide .cover-knot .knot-line, .slide .cover-knot circle, .slide .cover-knot text {
+      animation: none !important; opacity: 1 !important; transform: none !important;
+      stroke-dashoffset: 0 !important;
+    }
+    .squig-1, .squig-2 { filter: none !important; }
+  }
+
+  @media print {
+    html, body { height: auto !important; overflow: visible !important; }
+    body::before { display: none; }
+    .nav-hint { display: none; }
+    .slide { display: block !important; page-break-after: always; break-after: page; }
+    /* center 슬라이드는 flex 를 유지해야 세로 중앙정렬이 살아남는다 (block 로 덮으면 위로 쏠림) */
+    .slide.center { display: flex !important; }
+    .slide:last-child { page-break-after: avoid; }
+    @page { size: 1920px 1080px; margin: 0; }
+    animate { display: none !important; }
+  }
+</style>
+</head>
+<style>
+  /* ── 추가 스타일 (v2 플로우) ── */
+  .ask-line {
+    font-size: clamp(2.1rem, 3.8vw, 3.4rem);
+    line-height: 2.1; text-align: center;
+    font-family: 'LeeSeoyun', cursive;
+  }
+  .ask-line .q { border-bottom: 4px solid #b00; padding-bottom: 0.05em; }
+
+  .photo-frame {
+    border: 2.5px solid #0a0a0a; border-radius: 14px;
+    overflow: hidden; background: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .photo-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  /* ── 발표자 경험담: 락인커피 실물 사진, 왼쪽 절반 페이드 ── */
+  #s3 .hero-photo {
+    position: absolute; top: 0; left: 0; width: 54%; height: 100%;
+    background-image:
+      linear-gradient(180deg, #fffdf8 0%, rgba(255,253,248,.2) 22%, rgba(255,253,248,.2) 78%, #fffdf8 100%),
+      linear-gradient(to right, rgba(255,253,248,.3) 0%, rgba(255,253,248,.3) 40%, #fffdf8 97%),
+      url('logos/lockincoffee.jpg');
+    background-size: cover, cover, cover;
+    background-position: center, center, center 22%;
+    z-index: 0;
+  }
+  #s3 .hero-photo-cap {
+    position: absolute; left: 4vw; bottom: 6vh;
+    font-family: 'Caveat', cursive;
+    font-size: clamp(1.15rem, 1.8vw, 1.5rem);
+    color: #fffdf8;
+    text-shadow: 0 2px 12px rgba(0,0,0,.5);
+  }
+  #s3 .slide-title { text-shadow: 0 2px 16px rgba(255,253,248,.9); }
+  #s3 .slide-content { position: relative; z-index: 2; }
+
+  /* 조건 체크리스트 */
+  .cond { display: flex; flex-direction: column; gap: 1.1rem; }
+  .cond .row {
+    display: flex; align-items: center; gap: 1rem;
+    font-size: clamp(1.5rem, 2.5vw, 2.1rem);
+  }
+  .cond .tick {
+    width: 1.5em; height: 1.5em; flex: 0 0 auto;
+    border: 2.5px solid #0a7d38; border-radius: 6px;
+    color: #0a7d38; display: flex; align-items: center;
+    justify-content: center; font-weight: 700;
+  }
+
+  /* 기술스택 레이어 그래프 */
+  .stack { display: flex; flex-direction: column; gap: .45rem; width: 100%; align-items: center; }
+  .layer {
+    width: min(1140px, 96%);
+    border: 2.5px solid #0a0a0a; border-radius: 13px;
+    padding: .62rem 1.1rem;
+    display: flex; align-items: center; gap: 1rem;
+    background: #fffdf8;
+  }
+  .layer .tag {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(1.15rem, 1.8vw, 1.6rem);
+    min-width: 7.6em; flex: 0 0 auto;
+    border-right: 2px solid #ddd; padding-right: .9rem;
+  }
+  .layer .chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .chip {
+    font-family: 'Pretendard Variable', Pretendard, sans-serif;
+    border: 2px solid #444; border-radius: 999px;
+    padding: .26em .8em;
+    font-size: clamp(.95rem, 1.45vw, 1.26rem);
+    white-space: nowrap;
+  }
+  .layer.gcp { border-color: #1a73e8; } .layer.gcp .tag { color: #1a73e8; } .layer.gcp .chip { border-color: #1a73e8; }
+  .layer.pay { border-color: #b00; } .layer.pay .tag { color: #b00; } .layer.pay .chip { border-color: #b00; }
+  .layer.chain { border-color: #0a7d38; } .layer.chain .tag { color: #0a7d38; } .layer.chain .chip { border-color: #0a7d38; }
+  .stack .down { font-size: 1.15rem; color: #bbb; line-height: 1; }
+
+  /* 차별성 4칸 */
+  .edge-row { display: flex; gap: 1.6vw; justify-content: center; width: 100%; }
+  .edge {
+    flex: 1; max-width: 300px; text-align: center;
+    border: 2.5px solid #0a0a0a; border-radius: 14px;
+    padding: 1.5rem 1.1rem;
+  }
+  .edge .k {
+    font-family: 'LeeSeoyun', cursive;
+    font-size: clamp(1.6rem, 2.6vw, 2.2rem); display: block;
+  }
+  .edge .v { font-size: clamp(1.15rem, 1.9vw, 1.6rem); color: #555; margin-top: 0.5rem; display: block; line-height: 1.5; }
+</style>
+<body>
+
+<!-- ════ squigglevision filter bank (랜딩과 동일한 손그림 흔들림 효과) ════ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="squiggle-1" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="2" seed="1" result="noise">
+        <animate attributeName="seed" values="1;3;5;7;9" dur="0.45s" calcMode="discrete" repeatCount="indefinite"/>
+      </feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="3.5"/>
+    </filter>
+    <filter id="squiggle-2" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="turbulence" baseFrequency="0.035" numOctaves="2" seed="2" result="noise">
+        <animate attributeName="seed" values="2;6;10;14" dur="0.38s" calcMode="discrete" repeatCount="indefinite"/>
+      </feTurbulence>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5"/>
+    </filter>
+  </defs>
+</svg>
+
+<div class="nav-hint">← → 슬라이드 이동 · P 인쇄</div>
+
+<!-- ══════ 1. 표지 (랜딩 페이지와 동일한 톤) ══════ -->
+<section class="slide center cover" id="s1">
+  <!-- 손그림 낙서: 랜딩과 같은 여백 장식 -->
+  <svg class="doodle d-star draw" viewBox="0 0 100 100" aria-hidden="true">
+    <path d="M50 10 L61 38 L92 40 L68 60 L76 90 L50 73 L24 90 L32 60 L8 40 L39 38 Z" stroke-width="4"/>
+  </svg>
+  <svg class="doodle d-spiral draw" viewBox="0 0 100 100" aria-hidden="true">
+    <path d="M12 74 C6 40 34 12 62 18 C86 23 94 52 76 64 C60 75 42 62 47 47 C51 35 68 34 72 45" stroke-width="4"/>
+  </svg>
+  <svg class="doodle d-smile draw" viewBox="0 0 100 100" aria-hidden="true">
+    <circle cx="50" cy="50" r="38" stroke-width="4"/>
+    <path d="M32 44 C40 58 60 58 68 44" stroke-width="4"/>
+  </svg>
+
+  <div class="slide-title">
+    <svg viewBox="0 0 400 200" class="cover-knot" style="width: min(560px, 62vw); margin: 0 auto 2.2rem;">
+      <path class="knot-line" pathLength="1000" d="M22 118 C70 116 108 110 146 96 C196 78 250 50 268 80 C284 108 246 146 210 138 C180 131 172 100 200 84 C238 62 300 84 322 104 C344 124 362 126 380 120"
+            stroke-width="9" stroke="#0a0a0a" fill="none" stroke-linecap="round"/>
+      <circle cx="22" cy="118" r="7" fill="none" stroke="#0a0a0a" stroke-width="3"/>
+      <circle cx="380" cy="120" r="7" fill="none" stroke="#0a0a0a" stroke-width="3"/>
+      <text x="14" y="158" font-family="Caveat" font-size="27" fill="#8a8a8a" stroke="none">creator</text>
+      <text x="322" y="160" font-family="Caveat" font-size="27" fill="#8a8a8a" stroke="none">brand</text>
+    </svg>
+
+    <h1 class="cover-word">knot</h1>
+
+    <p class="cover-tag">크리에이터랑 브랜드, 에이전트끼리 만나서 매듭 짓는 곳</p>
+    <p class="cover-sub">당신이 자는 동안, 당신의 에이전트가 딜을 협상하고 · 계약하고 · 정산합니다.</p>
+  </div>
+  <div class="slide-footer">Solana Foundation + Google Cloud Korea AI Hackathon 2026</div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 2. 오프닝 질문 ══════ -->
+<section class="slide center" id="s2">
+  <div class="slide-content">
+    <p class="ask-line">
+      혹시 <span class="q">브랜드 운영</span>하시는 분?<br/>
+      <span class="q">인플루언서 마케팅</span> 해보신 분?<br/>
+      <span class="squig-2" style="color:#b00;">뭐가 제일 힘드셨어요?</span>
+    </p>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 3. 발표자 경험담 ══════ -->
+<section class="slide" id="s3">
+  <div class="hero-photo"><span class="hero-photo-cap">락인커피</span></div>
+  <h2 class="slide-title">저도 브랜드를 운영합니다</h2>
+  <div class="slide-content">
+    <div class="two-col">
+      <div aria-hidden="true"></div>
+      <div>
+        <div class="sketchbox" style="font-size:clamp(1.7rem,2.8vw,2.4rem);">
+          “저도 브랜드 운영 중인데,<br/><b>시간이 엄청 빠지더라고요</b>”
+        </div>
+        <ul class="bullets" style="margin-top:1.2rem;">
+          <li>후보 찾고 · DM 보내고 · 답장 기다리고</li>
+          <li>조건 조율만 며칠<span class="sub">그마저도 절반은 읽씹</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 4. 콜드DM 실물 ══════ -->
+<section class="slide" id="s4">
+  <h2 class="slide-title">협찬은 아직도 콜드DM이다</h2>
+  <div class="slide-content">
+    <div class="two-col" style="align-items:center;">
+      <div class="photo-frame" style="max-height: 58vh;">
+        <img src="logos/instagram_dm_outreach_mock.png" alt="인플루언서 마케팅 콜드DM" />
+      </div>
+      <div class="dm-pile" style="height:56vh;">
+        <div class="dm dead" style="top:4%; left:2%;">안녕하세요! 협찬 제안드려요 🙏</div>
+        <div class="dm dead" style="top:20%; right:2%;">단가가 어떻게 되실까요?</div>
+        <div class="dm dead" style="top:36%; left:6%;">혹시 확인해보셨을까요..?</div>
+        <div class="dm dead" style="top:52%; right:4%;">사용권은 어디까지인가요?</div>
+        <div class="dm dead" style="top:68%; left:4%;">리마인드 드립니다 🥲</div>
+        <div class="dm dead" style="top:80%; right:8%;">입금은 언제쯔음..</div>
+        <div class="dm punch" style="top:92%; left:34%;">(읽씹)</div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">— 우리 팀도 당해봤다</div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 5. 3개 브랜드 ══════ -->
+<section class="slide" id="s5">
+  <h2 class="slide-title">저만 겪는 문제가 아니었습니다</h2>
+  <div class="slide-content">
+    <div class="logo-row">
+      <div class="logo-item">
+        <div class="logo-box"><img src="logos/crycheeseburger.png" alt="크라이치즈버거" /></div>
+        <span>F&amp;B · 프랜차이즈</span>
+        <span class="who">인플루언서 마케터 원지웅</span>
+        <div class="pain-bubble">“하루 4시간은 일정 조율에 씁니다<span class="sub">그마저도 절반은 다시 조율</span>”</div>
+      </div>
+      <div class="logo-item">
+        <div class="logo-box"><img src="logos/cherryxx.png" alt="체리엑스엑스" /></div>
+        <span>뷰티 · 코스메틱</span>
+        <span class="who">대표 고유안</span>
+        <div class="pain-bubble">“뷰티는 단가가 계속 널뛰어서<span class="sub">협상·조율에만 공수가 많이 듭니다</span>”</div>
+      </div>
+      <div class="logo-item">
+        <div class="logo-box"><img src="logos/branderjean.png" alt="브랜더진" /></div>
+        <span>패션 · 크리에이터 마케팅</span>
+        <span class="who">인플루언서 마케터 조민서</span>
+        <div class="pain-bubble">“하루 100명씩 DM 보내고<span class="sub">엑셀 정리까지, 너무 힘듭니다</span>”</div>
+      </div>
+    </div>
+    <div class="sketchbox" style="margin-top:3rem; max-width:900px; text-align:center;">
+      3개 브랜드에서 직접 확인 — 업종이 달라도 <b>막히는 지점은 똑같았습니다</b>
+    </div>
+    <p class="footnote">인터뷰 및 데모 협조에 동의한 브랜드</p>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 6. 문제 3가지 ══════ -->
+<section class="slide" id="s6">
+  <h2 class="slide-title">정리해보니 3가지였습니다</h2>
+  <div class="slide-content">
+    <div class="cost-row">
+      <div class="col-card cost">
+        <svg class="cost-ico draw" viewBox="0 0 120 100">
+          <path d="M10 16 C10 10 15 6 21 6 L69 6 C75 6 80 10 80 16 L80 46 C80 52 75 56 69 56 L36 56 L22 70 L24 56 L21 56 C15 56 10 52 10 46 Z" stroke-width="4"/>
+          <circle cx="31" cy="31" r="3.4" fill="#0a0a0a" stroke="none"/>
+          <circle cx="45" cy="31" r="3.4" fill="#0a0a0a" stroke="none"/>
+          <circle cx="59" cy="31" r="3.4" fill="#0a0a0a" stroke="none"/>
+          <path d="M62 52 C62 47 66 44 71 44 L104 44 C109 44 113 47 113 52 L113 74 C113 79 109 82 104 82 L92 82 L100 94 L84 82 L71 82 C66 82 62 79 62 74 Z" stroke-width="4" stroke="#b00" stroke-dasharray="7 7"/>
+        </svg>
+        <h3>1 · 소통 비용</h3>
+        <p>후보 한 명 한 명에게<br/>콜드DM · 조건 협상 · 리마인드</p>
+      </div>
+      <div class="col-card cost">
+        <svg class="cost-ico draw" viewBox="0 0 120 100">
+          <rect x="10" y="8" width="66" height="84" rx="9" stroke-width="4"/>
+          <path d="M23 30 L31 38 L45 24" stroke-width="4"/>
+          <line x1="52" y1="31" x2="66" y2="31" stroke-width="3.5"/>
+          <path d="M23 56 L31 64 L45 50" stroke-width="4"/>
+          <line x1="52" y1="57" x2="66" y2="57" stroke-width="3.5"/>
+          <line x1="23" y1="80" x2="45" y2="80" stroke-width="3.5"/>
+          <circle cx="86" cy="60" r="23" stroke-width="4.5" stroke="#b00"/>
+          <line x1="102" y1="77" x2="114" y2="90" stroke-width="5.5" stroke="#b00"/>
+        </svg>
+        <h3>2 · 검증 비용</h3>
+        <p>링크 열어보고 · 캡처하고<br/>리포트 만들고 — 전부 수작업</p>
+      </div>
+      <div class="col-card cost">
+        <svg class="cost-ico draw" viewBox="0 0 120 100">
+          <ellipse cx="46" cy="26" rx="34" ry="13" stroke-width="4"/>
+          <path d="M12 26 L12 62 C12 69 27 75 46 75 C65 75 80 69 80 62 L80 26" stroke-width="4"/>
+          <path d="M12 44 C12 51 27 57 46 57 C65 57 80 51 80 44" stroke-width="3.5" opacity=".5"/>
+          <circle cx="94" cy="72" r="22" stroke-width="4.5" stroke="#b00"/>
+          <path d="M94 58 L94 72 L105 79" stroke-width="4.5" stroke="#b00"/>
+        </svg>
+        <h3>3 · 정산 비용</h3>
+        <p>확인 끝나도 세금계산서 ·<br/>이체 처리로 또 며칠</p>
+      </div>
+    </div>
+    <p class="footnote big">
+      크리에이터 <b>48%</b>가 정산 지연을 경험, 그중 <b>38.5%는 1개월 이상</b> 대기 (Lumanu, 2026) ·
+      인플루언서 사기로 브랜드는 매년 <b>$4B+</b> 손실 (CHEQ · Univ. of Baltimore)
+    </p>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 7. 양쪽의 문제 — 같은 3지점 ══════ -->
+<section class="slide" id="s7">
+  <h2 class="slide-title">양쪽이 같은 지점에서 막힙니다</h2>
+  <div class="slide-content">
+    <div class="bothsides">
+      <div class="bs-head">🏢 브랜드</div>
+      <div class="bs-head bs-mid">막히는 지점</div>
+      <div class="bs-head">⭐ 크리에이터</div>
+
+      <div class="bs-pain">후보마다 DM 쓰고<br/>답장을 기다린다</div>
+      <div class="bs-node"><span class="n">1</span> 소통</div>
+      <div class="bs-pain">브랜드마다 조건을<br/>처음부터 다시 협상</div>
+
+      <div class="bs-pain">가짜 지표를<br/>걸러낼 방법이 없다</div>
+      <div class="bs-node"><span class="n">2</span> 검증</div>
+      <div class="bs-pain">내 성과를<br/>증명할 방법이 없다</div>
+
+      <div class="bs-pain">선지급하기엔<br/>불안하다</div>
+      <div class="bs-node"><span class="n">3</span> 정산</div>
+      <div class="bs-pain">언제 입금될지<br/>알 수 없다</div>
+    </div>
+    <div class="sketchbox" style="margin-top:2.2rem; text-align:center; max-width:1020px;">
+      한쪽만 고쳐서는 <b>풀리지 않습니다</b> — 양쪽에 필요한 건 <b>같은 하나의 레이어</b>였습니다
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 8. Before / After + A2A 월드 ══════ -->
+<section class="slide" id="s8">
+  <h2 class="slide-title">n 대화 → 1 대화</h2>
+  <div class="slide-content">
+    <div class="two-col">
+      <div style="text-align:center;">
+        <p style="font-size:clamp(1.4rem,2.3vw,1.95rem); color:#999; margin-bottom:0.6rem;">BEFORE · n 대상</p>
+        <svg class="draw" viewBox="0 0 340 300" style="width:min(320px, 38vw);">
+          <rect x="26" y="124" width="60" height="52" rx="6" stroke-width="3" stroke="#999"/>
+          <text x="56" y="196" text-anchor="middle" font-family="Pretendard" font-size="16" fill="#999" stroke="none">브랜드</text>
+          <path d="M90 138 L248 42" stroke-width="2.5" stroke="#c00" opacity=".55"/>
+          <path d="M90 145 L248 102" stroke-width="2.5" stroke="#c00" opacity=".55"/>
+          <path d="M90 152 L248 158" stroke-width="2.5" stroke="#c00" opacity=".55"/>
+          <path d="M90 160 L248 214" stroke-width="2.5" stroke="#c00" opacity=".55"/>
+          <path d="M90 167 L248 268" stroke-width="2.5" stroke="#c00" opacity=".55"/>
+          <circle cx="264" cy="42" r="14" stroke-width="2.5" stroke="#999"/>
+          <circle cx="264" cy="102" r="14" stroke-width="2.5" stroke="#999"/>
+          <circle cx="264" cy="158" r="14" stroke-width="2.5" stroke="#999"/>
+          <circle cx="264" cy="214" r="14" stroke-width="2.5" stroke="#999"/>
+          <circle cx="264" cy="268" r="14" stroke-width="2.5" stroke="#999"/>
+        </svg>
+      </div>
+      <div style="text-align:center;">
+        <p style="font-size:clamp(1.4rem,2.3vw,1.95rem); color:#0a7d38; margin-bottom:0.6rem;">AFTER · KNOT · 1 대 1</p>
+        <svg class="draw" viewBox="0 0 340 300" style="width:min(320px, 38vw);">
+          <rect x="8" y="124" width="60" height="52" rx="6" stroke-width="3"/>
+          <text x="38" y="196" text-anchor="middle" font-family="Pretendard" font-size="16" fill="#555" stroke="none">브랜드</text>
+          <path d="M72 150 L118 150" stroke-width="5" stroke="#0a7d38"/>
+          <circle cx="152" cy="150" r="32" stroke-width="3.5" stroke="#0a7d38"/>
+          <path d="M136 153 C143 140 149 162 157 148 C163 138 169 154 171 148" stroke-width="3" stroke="#0a7d38"/>
+          <text x="152" y="208" text-anchor="middle" font-family="Pretendard" font-size="16" fill="#555" stroke="none">에이전트</text>
+          <path d="M182 140 L250 42" stroke-width="2" stroke="#999" opacity=".6"/>
+          <path d="M184 145 L250 102" stroke-width="2" stroke="#999" opacity=".6"/>
+          <path d="M185 150 L250 158" stroke-width="2" stroke="#999" opacity=".6"/>
+          <path d="M184 157 L250 214" stroke-width="2" stroke="#999" opacity=".6"/>
+          <path d="M182 162 L250 268" stroke-width="2" stroke="#999" opacity=".6"/>
+          <circle cx="266" cy="42" r="14" stroke-width="2.5"/>
+          <circle cx="266" cy="102" r="14" stroke-width="2.5"/>
+          <circle cx="266" cy="158" r="14" stroke-width="2.5"/>
+          <circle cx="266" cy="214" r="14" stroke-width="2.5"/>
+          <circle cx="266" cy="268" r="14" stroke-width="2.5"/>
+        </svg>
+      </div>
+    </div>
+    <div class="sketchbox" style="margin-top:1.4rem; text-align:center; max-width:1000px;">
+      플랫폼이 <b>사용자와 사용자</b>를 잇는 것이라면,<br/>
+      우리는 에이전트끼리 <b>소통 · 협상 · 검증 · 결제 · 정산</b>하는
+      <span style="border-bottom:5px solid #0a7d38;">A2A 월드</span>를 만들었습니다 — 그게 KNOT입니다
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 9. 작동 방식 — 실행 흐름 애니메이션 ══════ -->
+<section class="slide" id="s9">
+  <h2 class="slide-title">작동 방식</h2>
+  <div class="slide-content">
+    <div class="runner">
+      <div class="rail"><span class="pulse"></span></div>
+      <div class="stations">
+        <div class="st" style="--i:0"><div class="box">🏢<br/>브랜드</div><div class="note">“예산 1,000 USDC로<br/>후보 찾아줘”</div></div>
+        <div class="st" style="--i:1"><div class="box">🔎<br/>후보 탐색</div><div class="note">Gemini가<br/>후보 정렬</div></div>
+        <div class="st hot" style="--i:2"><div class="box">💳<br/>pay.sh 검증</div><div class="note pay">USDC 0.02<br/>자율 결제</div></div>
+        <div class="st" style="--i:3"><div class="box">🤝<br/>A2A 협상</div><div class="note">에이전트끼리<br/>조건 합의</div></div>
+        <div class="st cool" style="--i:4"><div class="box">🔒<br/>에스크로</div><div class="note">USDC 660<br/>온체인 잠금</div></div>
+        <div class="st cool" style="--i:5"><div class="box">⭐<br/>정산</div><div class="note">조건 통과<br/>즉시 지급</div></div>
+      </div>
+      <div class="coin">USDC →</div>
+    </div>
+    <div class="sketchbox human" style="text-align:center; max-width:1020px;">
+      사람의 승인 게이트는 딱 두 곳 — <b>딜 승인</b>과 <b>최종 콘텐츠 확인</b>
+      <span style="display:block; color:#666; font-size:.82em; margin-top:.4em;">
+        탐색 · 검증 결제 · 협상 · 계약 · 정산 실행은 전부 에이전트 — 단, 한도와 영수증 안에서만
+      </span>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 10. 조건 초과 → 보너스 자동 ══════ -->
+<section class="slide" id="s10">
+  <h2 class="slide-title">조건을 넘기면, 보너스도 자동</h2>
+  <div class="slide-content">
+    <div class="gauge">
+      <div class="gauge-track">
+        <div class="gauge-fill"></div>
+        <div class="gauge-goal"><span>목표 50만 뷰</span></div>
+        <div class="gauge-head"><span class="cnt c1">12만</span><span class="cnt c2">31만</span><span class="cnt c3">50만</span><span class="cnt c4">54만</span></div>
+      </div>
+      <div class="gauge-cap">계약 조항 · @haru.films 릴스 조회수 <b>50만 초과 시 +10%</b></div>
+    </div>
+    <div class="payouts">
+      <div class="payout base"><span class="pk">체결가</span><span class="pv">USDC 400</span><span class="ps">마일스톤 30 / 70 분할 지급</span></div>
+      <div class="payout bonus"><span class="pk">50만 뷰 초과</span><span class="pv">+ USDC 40</span><span class="ps">보너스 자동 지급 (+10%)</span></div>
+    </div>
+    <div class="sketchbox" style="margin-top:2rem; text-align:center; max-width:1020px; border-color:#0a7d38;">
+      보너스 조항도 계약과 함께 <b>에스크로에 조건부로 잠기고</b>, 넘는 순간 <b>온체인에서 스스로 지급</b>됩니다
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 11. AI 자율성 ══════ -->
+<section class="slide" id="s11">
+  <h2 class="slide-title">AI 자율성</h2>
+  <div class="slide-content">
+    <div class="two-col">
+      <div class="agent-cards">
+        <div class="agent-card">
+          <svg viewBox="0 0 220 180" class="draw">
+            <rect x="60" y="30" width="100" height="80" rx="8" stroke-width="3.5"/>
+            <path d="M55 30 L70 12 L150 12 L165 30" stroke-width="3.5"/>
+            <circle cx="92" cy="62" r="4" fill="#0a0a0a" stroke="none"/>
+            <circle cx="128" cy="62" r="4" fill="#0a0a0a" stroke="none"/>
+            <path d="M95 84 C103 92 117 92 125 84" stroke-width="3.5"/>
+            <path d="M85 110 L85 150 M135 110 L135 150" stroke-width="3.5"/>
+            <text x="176" y="60" font-family="LeeSeoyun" font-size="26" stroke="none" fill="#777">₩</text>
+          </svg>
+          <h3>브랜드 에이전트</h3>
+          <p>Gemini 분석<br/>정책 승인</p>
+        </div>
+        <div class="agent-card">
+          <svg viewBox="0 0 220 180" class="draw">
+            <path d="M110 8 L124 44 L162 46 L132 70 L142 108 L110 86 L78 108 L88 70 L58 46 L96 44 Z" stroke-width="3.5"/>
+            <circle cx="98" cy="56" r="4" fill="#0a0a0a" stroke="none"/>
+            <circle cx="124" cy="56" r="4" fill="#0a0a0a" stroke="none"/>
+            <path d="M100 72 C106 79 116 79 122 72" stroke-width="3.5"/>
+            <path d="M95 108 L95 150 M125 108 L125 150" stroke-width="3.5"/>
+          </svg>
+          <h3>크리에이터 에이전트</h3>
+          <p>조건 검토<br/>역제안</p>
+        </div>
+      </div>
+      <ul class="bullets">
+        <li>Gemini <b>분석과 제안</b></li>
+        <li>정책 코드 <b>승인</b><span class="sub">예산 · 딜당 한도 안에서만 체결</span></li>
+        <li>한도 초과는 <b>자동 차단</b><span class="sub">800 USDC 요구 → 한도 450 초과 → 거절 (데모에서 확인)</span></li>
+        <li>A2A HTTP 협상 · 양쪽 <b>비공개 정책</b> 유지</li>
+      </ul>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 12. 왜 블록체인인가 ══════ -->
+<section class="slide" id="s12">
+  <h2 class="slide-title">왜 블록체인인가</h2>
+  <div class="slide-content">
+    <div class="why-split">
+      <div>
+        <div class="why-lab">기존 결제망</div>
+        <svg class="why-ico draw" viewBox="0 0 240 116">
+          <rect x="8" y="32" width="56" height="52" rx="12" stroke-width="4" stroke="#aaa"/>
+          <text x="36" y="64" text-anchor="middle" font-size="21" font-family="Pretendard" fill="#aaa" stroke="none">API</text>
+          <path d="M70 58 L102 58" stroke-width="4" stroke="#aaa"/>
+          <circle cx="128" cy="58" r="23" stroke-width="4.5" stroke="#b00"/>
+          <path d="M128 45 L128 61" stroke-width="4.5" stroke="#b00"/>
+          <circle cx="128" cy="70" r="2.8" fill="#b00" stroke="none"/>
+          <path d="M154 58 L188 58" stroke-width="4" stroke="#aaa" stroke-dasharray="6 7"/>
+          <rect x="192" y="32" width="40" height="52" rx="12" stroke-width="4" stroke="#aaa"/>
+          <text x="128" y="104" text-anchor="middle" font-size="18" font-family="Pretendard" fill="#b00" stroke="none">사람 승인</text>
+        </svg>
+        <p class="why-txt">3D Secure · 앱 푸시 승인 · T+1 배치 정산 —<br/>전부 <b style="color:#b00;">마지막에 사람이 있다</b>는 전제로 설계됨</p>
+        <p class="why-kick bad">에이전트가 자율 결제하려면 사람을 어딘가 숨겨야 한다</p>
+      </div>
+      <div>
+        <div class="why-lab on">KNOT</div>
+        <svg class="why-ico draw" viewBox="0 0 240 116">
+          <rect x="8" y="32" width="56" height="52" rx="12" stroke-width="4"/>
+          <text x="36" y="64" text-anchor="middle" font-size="21" font-family="Pretendard" fill="#0a0a0a" stroke="none">API</text>
+          <path d="M70 58 L186 58" stroke-width="5" stroke="#0a7d38"/>
+          <path d="M172 48 L188 58 L172 68" stroke-width="5" stroke="#0a7d38"/>
+          <rect x="192" y="32" width="40" height="52" rx="12" stroke-width="4" stroke="#0a7d38"/>
+          <text x="128" y="36" text-anchor="middle" font-size="19" font-family="Pretendard" fill="#0a7d38" stroke="none">x402</text>
+          <text x="128" y="104" text-anchor="middle" font-size="18" font-family="Pretendard" fill="#0a7d38" stroke="none">승인 지점 없음</text>
+        </svg>
+        <p class="why-txt">지갑은 <b>키페어만 있으면 소프트웨어가 직접 소유하고 서명</b>합니다<br/>승인 지점 자체가 없습니다</p>
+        <p class="why-kick good">그래서 <b>pay.sh / x402</b>로 호출당 자율 결제가 성립합니다</p>
+      </div>
+    </div>
+    <div class="ev-row">
+      <div class="ev"><img src="logos/paysh.svg" alt="pay.sh" onerror="this.remove()"/><b>pay.sh · x402</b><span>검증 API를 사람 승인 없이 구매</span></div>
+      <div class="ev"><img src="logos/anchor.png" alt="Anchor" onerror="this.remove()"/><b>Anchor 에스크로</b><span>마일스톤 30/70 분할 · 조건부 잠금</span></div>
+      <div class="ev"><img src="logos/usdc.svg" alt="USDC" onerror="this.remove()"/><b>USDC-SPL</b><span>자금 이동을 누구나 Explorer에서 증명</span></div>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 13. 왜 솔라나인가 ══════ -->
+<section class="slide" id="s13">
+  <h2 class="slide-title">왜 솔라나인가</h2>
+  <div class="slide-content">
+    <div class="sol-grid">
+      <div class="sol-card">
+        <div class="sol-n">단가는 작고<br/>빈도는 높다</div>
+        <p>API 호출마다 결제, 협상 라운드마다 메시지 — <b>수수료가 건당 비용을 넘으면</b> 이 루프 자체가 성립하지 않습니다</p>
+      </div>
+      <div class="sol-card hi">
+        <img src="logos/solana.svg" alt="Solana" class="sol-logo" onerror="this.remove()"/>
+        <div class="sol-n">Solana</div>
+        <p>수수료 <b>사실상 0</b><br/>파이널리티 <b>1초 미만</b><br/>에이전트가 사람 기다리듯 기다리지 않습니다</p>
+      </div>
+      <div class="sol-card">
+        <div class="sol-n">x402가<br/>Solana를 1급 지원</div>
+        <p>결제 토큰은 <b>USDC-SPL</b> — 은행 영업시간과 무관하게 지갑 주소만으로 <b>24/7</b> 도달</p>
+      </div>
+    </div>
+    <div class="proof">
+      <span class="pf-k">지금 데모에서 실제로 도는 것</span>
+      <div class="pf-row">
+        <span class="pf">Solana Devnet</span><span class="pf">USDC-SPL</span>
+        <span class="pf">Anchor 에스크로 프로그램</span><span class="pf">pay.sh 결제</span>
+        <span class="pf">Explorer 트랜잭션</span>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 14. LIVE DEMO ══════ -->
+<section class="slide" id="s14">
+  <h2 class="slide-title">라이브 데모</h2>
+  <div class="slide-content">
+    <svg class="draw" viewBox="0 0 620 240" style="width:min(760px, 84vw); margin-bottom:2.2rem;">
+      <rect x="40" y="86" width="92" height="74" rx="8" stroke-width="3.5"/>
+      <path d="M35 86 L50 66 L122 66 L137 86" stroke-width="3.5"/>
+      <circle cx="70" cy="116" r="4" fill="#0a0a0a" stroke="none"/>
+      <circle cx="102" cy="116" r="4" fill="#0a0a0a" stroke="none"/>
+      <path d="M73 136 C80 143 92 143 99 136" stroke-width="3"/>
+      <text x="86" y="196" text-anchor="middle" font-family="Pretendard" font-size="19" fill="#555" stroke="none">브랜드</text>
+      <path d="M146 122 C210 120 236 78 288 96 C324 108 316 152 282 148 C252 144 250 110 286 100 C338 86 386 116 470 120" stroke-width="6"/>
+      <text x="300" y="58" text-anchor="middle" font-family="Caveat" font-size="30" fill="#0a7d38" stroke="none">knot</text>
+      <path d="M540 62 L556 100 L596 102 L564 128 L575 168 L540 145 L505 168 L516 128 L484 102 L524 100 Z" stroke-width="3.5"/>
+      <circle cx="527" cy="112" r="4" fill="#0a0a0a" stroke="none"/>
+      <circle cx="553" cy="112" r="4" fill="#0a0a0a" stroke="none"/>
+      <path d="M529 130 C535 137 545 137 551 130" stroke-width="3"/>
+      <text x="540" y="200" text-anchor="middle" font-family="Pretendard" font-size="19" fill="#555" stroke="none">크리에이터</text>
+    </svg>
+    <a href="https://thezonebio.com/knot" target="_blank" class="demo-link">https://thezonebio.com/knot</a>
+    <p class="footnote" style="margin-top:1.3rem;">Solana Devnet · 실제 온체인 트랜잭션</p>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 15. 트랙션 ══════ -->
+<section class="slide" id="s15">
+  <h2 class="slide-title">실제 성과</h2>
+  <div class="slide-content">
+    <div class="metrics">
+      <div class="metric"><span class="num">5</span><span class="lbl">브랜드 등록</span></div>
+      <div class="metric"><span class="num">10</span><span class="lbl">크리에이터 등록</span></div>
+      <div class="metric"><span class="num">40+</span><span class="lbl">웨이트리스트<br/>(마케팅 담당자 등)</span></div>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 15.5. 업계 평균 vs KNOT (그래프) ══════ -->
+<section class="slide" id="s15b">
+  <h2 class="slide-title">업계 평균 vs KNOT — 정산, 얼마나 다른가</h2>
+  <div class="slide-content">
+    <div class="cmp-chart">
+      <div class="cmp-row">
+        <span class="cmp-label">업계 평균<br/><span style="font-weight:400;color:#999;">정산 지연 시</span></span>
+        <div class="cmp-track">
+          <div class="cmp-fill bad" style="width:100%;">
+            <span class="cmp-num">최소 30일+</span>
+          </div>
+        </div>
+      </div>
+      <div class="cmp-row">
+        <span class="cmp-label" style="color:#0a7d38;">KNOT</span>
+        <div class="cmp-track">
+          <div class="cmp-fill good"></div>
+          <svg class="cmp-break" viewBox="0 0 24 60" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M6 0 L18 20 L2 40 L22 60" stroke="#0a0a0a" stroke-width="3" fill="none"/>
+          </svg>
+          <span class="cmp-num-out">71초</span>
+        </div>
+      </div>
+    </div>
+    <p class="cmp-ratio">같은 정산 과정이, 약 <b>36,000배</b> 빨라집니다</p>
+    <p class="footnote" style="margin-top:1rem; max-width:940px; text-align:center;">
+      업계: 크리에이터 48%가 정산 지연 경험, 그중 38.5%는 1개월 이상 대기 — Lumanu, 크리에이터 500+명 서베이(2026) ·
+      KNOT: 오늘 실제 devnet 트랜잭션 실측(펀딩→마일스톤 릴리즈), 수수료 0.000085 SOL, Explorer에서 서명 검증 가능
+    </p>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 16. 비즈니스 모델 ══════ -->
+<section class="slide" id="s16">
+  <h2 class="slide-title">비즈니스 모델</h2>
+  <div class="slide-content">
+    <div class="two-col top">
+      <div>
+        <h3 style="margin-bottom:1rem;">수익원 5가지</h3>
+        <ul class="bullets" style="font-size:clamp(1.1rem,1.75vw,1.42rem);">
+          <li><b>정산 수수료</b><span class="sub">에스크로로 흐르는 GMV의 일정 %</span></li>
+          <li><b>예치금 운용수익</b><span class="sub">브랜드가 캠페인 전 충전해둔 USDC 예치금 운용</span></li>
+          <li><b>크리에이터 헤드헌팅 수수료</b><span class="sub">매칭·소싱 성공 시 수수료</span></li>
+          <li><b>성과 데이터 판매</b><span class="sub">캠페인 성과 데이터 익명화·판매</span></li>
+          <li><b>플랫폼 이용료</b><span class="sub">SaaS 구독 + 검증 API 마크업</span></li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-bottom:0.6rem;">매출 시나리오 <span style="font-size:0.58em; color:#999; font-weight:400;">(가정 기반)</span></h3>
+        <div class="cmp-chart" style="max-width:100%;">
+          <div class="cmp-row" style="margin-bottom:1.2rem;">
+            <span class="cmp-label" style="flex:0 0 96px; font-size:0.92rem;">보수적</span>
+            <div class="cmp-track" style="height:46px;">
+              <div class="cmp-fill" style="width:7%; background:#cfe9d9; height:100%;"></div>
+              <span class="cmp-num-out" style="font-size:1.05rem; margin-left:.6rem;">연 41억원</span>
+            </div>
+          </div>
+          <div class="cmp-row" style="margin-bottom:1.2rem;">
+            <span class="cmp-label" style="flex:0 0 96px; font-size:0.92rem;">기본</span>
+            <div class="cmp-track" style="height:46px;">
+              <div class="cmp-fill" style="width:21%; background:#6cbb8f; height:100%;"></div>
+              <span class="cmp-num-out" style="font-size:1.05rem; margin-left:.6rem;">연 131억원</span>
+            </div>
+          </div>
+          <div class="cmp-row">
+            <span class="cmp-label" style="flex:0 0 96px; font-size:0.92rem; color:#0a7d38;">적극적</span>
+            <div class="cmp-track" style="height:46px;">
+              <div class="cmp-fill" style="width:100%; background:#0a7d38; height:100%; display:flex; align-items:center; justify-content:flex-end; padding-right:.9rem;">
+                <span style="font-family:'LeeSeoyun',cursive; font-size:1.1rem; color:#fffdf8;">연 616억원</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="footnote" style="text-align:left; margin-top:1rem;">
+          국내 화장품 책임판매업체 <b>27,361개</b>(식약처·KOSIS, 2024) 중 <b>10%(2,736개)</b> 온보딩 가정 ·
+          브랜드당 연 GMV 3,000만~1.5억원 · 블렌디드 수수료율 5~15% 가정 시나리오
+        </p>
+      </div>
+    </div>
+    <div class="sketchbox" style="margin-top:1.6rem; text-align:center; max-width:1060px; border-color:#b00;">
+      한번 온체인 정산의 <b>투명한 기록</b>을 경험하면, 수작업·플랫폼 종속 정산으로 <b style="color:#b00;">돌아갈 수 없습니다</b>
+      <span style="display:block; color:#666; font-size:0.8em; margin-top:.4em;">신뢰 기록이 KNOT이 아니라 체인에 쌓이기 때문 — 이건 비가역적인 변화입니다</span>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 17. 기술 스택 그래프 ══════ -->
+<section class="slide tight" id="s17">
+  <h2 class="slide-title">기술 스택</h2>
+  <div class="slide-content">
+    <div class="stack">
+      <div class="layer">
+        <span class="tag">사용자</span>
+        <div class="chips"><span class="chip">브랜드</span><span class="chip">크리에이터</span><span class="chip">Next.js Web</span></div>
+      </div>
+      <span class="down">↓</span>
+      <div class="layer gcp">
+        <span class="tag"><img src="logos/googlecloud.svg" alt="Google Cloud" class="tag-logo" onerror="this.replaceWith(document.createTextNode('Google Cloud'))"/></span>
+        <div class="chips">
+          <span class="chip with-logo"><img src="logos/gemini.svg" alt="" onerror="this.remove()"/>Vertex AI Gemini</span><span class="chip">Cloud Run</span>
+          <span class="chip with-logo"><img src="logos/youtube.svg" alt="" onerror="this.remove()"/>YouTube Data API</span><span class="chip">Firestore</span>
+          <span class="chip">Firebase Auth</span><span class="chip">Secret Manager</span>
+        </div>
+      </div>
+      <span class="down">↓</span>
+      <div class="layer">
+        <span class="tag">에이전트</span>
+        <div class="chips"><span class="chip">A2A HTTP 협상</span><span class="chip">정책 엔진</span><span class="chip">Python</span></div>
+      </div>
+      <span class="down">↓</span>
+      <div class="layer pay">
+        <span class="tag">결제 레일</span>
+        <div class="chips"><span class="chip with-logo"><img src="logos/paysh.svg" alt="pay.sh" style="height:1.5em" onerror="this.replaceWith(document.createTextNode('pay.sh'))"/></span><span class="chip">x402</span><span class="chip">호출당 자율 결제</span></div>
+      </div>
+      <span class="down">↓</span>
+      <div class="layer chain">
+        <span class="tag">온체인</span>
+        <div class="chips">
+          <span class="chip with-logo"><img src="logos/solana.svg" alt="" onerror="this.remove()"/>Solana Devnet</span><span class="chip with-logo"><img src="logos/anchor.png" alt="" onerror="this.remove()"/>Anchor (Rust) 에스크로</span>
+          <span class="chip with-logo"><img src="logos/usdc.svg" alt="" onerror="this.remove()"/>USDC-SPL</span><span class="chip">anchorpy / solders</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 18. 시장 ══════ -->
+<section class="slide" id="s18">
+  <h2 class="slide-title">시장</h2>
+  <div class="slide-content">
+    <div style="display:flex; flex-direction:column; align-items:center; gap:1.1rem; width:100%;">
+      <div class="sketchbox soft" style="width:min(880px,90%); text-align:center;">
+        <b>TAM</b> · 글로벌 인플루언서 마케팅 <b>$34B+</b> (2026)
+        <span style="display:block; color:#777; font-size:0.78em; margin-top:0.3em;">브랜드 디지털 마케팅 예산의 최대 25%</span>
+      </div>
+      <div class="sketchbox" style="width:min(700px,78%); text-align:center;">
+        <b>SAM</b> · 에이전시 · 중소 브랜드 · 개인 셀러
+        <span style="display:block; color:#777; font-size:0.78em; margin-top:0.3em;">엔터프라이즈 SaaS를 도입할 수 없는 롱테일 세그먼트</span>
+      </div>
+      <div class="sketchbox" style="width:min(600px,68%); text-align:center; border-color:#0a7d38; border-width:3px;">
+        <b style="color:#0a7d38;">SOM</b> · 국내 D2C 브랜드
+        <span style="display:block; color:#777; font-size:0.78em; margin-top:0.3em;">크리에이터 마케팅 초기 도입군</span>
+      </div>
+    </div>
+    <p class="footnote" style="margin-top:2rem;">
+      Agentic Commerce 거래량 전망: 2026 $8B → 2030 <b>$1.5T</b> (Juniper Research)
+    </p>
+    <div class="sketchbox" style="margin-top:1.6rem; text-align:center; max-width:1000px; border-color:#0a7d38; border-width:3px;">
+      우리는 자신 있습니다 — <b style="color:#0a7d38;">Solana Foundation 글로벌 결선</b>에 진출하고,
+      한국에서 새로운 A2A 커머스 플랫폼을 만들어 <b>에이전트 시대의 새로운 페이스북, 새로운 인스타그램</b>이 되겠습니다
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 19. 팀 ══════ -->
+<section class="slide" id="s19">
+  <h2 class="slide-title">팀</h2>
+  <div class="slide-content">
+    <div class="team-row">
+      <div class="team-member">
+        <svg class="ip" viewBox="0 0 100 100"><rect width="100" height="100" fill="#CBD9D3"/>
+          <g transform="translate(-6,10)">
+            <rect x="8" y="10" width="76" height="62" rx="20" fill="#F6EEE2"/>
+            <rect x="8" y="10" width="76" height="18" rx="9" fill="#E8674F"/>
+            <circle cx="34" cy="47" r="5.2" fill="#E8674F"/><circle cx="60" cy="47" r="5.2" fill="#E8674F"/>
+            <path d="M39 60 q7 7 14 0" stroke="#E8674F" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+            <rect x="26" y="72" width="14" height="24" rx="7" fill="#F6EEE2"/>
+            <rect x="52" y="72" width="14" height="24" rx="7" fill="#F6EEE2"/>
+          </g></svg>
+        <h3>민성</h3><p>프론트엔드 · UX<br/>PRD</p>
+        <p class="team-cred">엑싯 2회 · Y Combinator<br/>AWS 해커톤 수상 · 2025 정주영창업경진대회 수상</p>
+      </div>
+      <div class="team-member">
+        <svg class="ip" viewBox="0 0 100 100"><rect width="100" height="100" fill="#E3DAC6"/>
+          <g transform="translate(8,10)">
+            <rect x="10" y="8" width="76" height="66" rx="26" fill="#6C7FD8"/>
+            <rect x="22" y="30" width="52" height="24" rx="12" fill="#F3F5FF"/>
+            <circle cx="37" cy="42" r="5" fill="#6C7FD8"/><circle cx="59" cy="42" r="5" fill="#6C7FD8"/>
+            <rect x="26" y="74" width="15" height="22" rx="7.5" fill="#6C7FD8"/>
+            <rect x="55" y="74" width="15" height="22" rx="7.5" fill="#6C7FD8"/>
+          </g></svg>
+        <h3>예원</h3><p>에이전트 시스템<br/>온보딩</p>
+        <p class="team-cred">NearAI 해커톤 우승 · XRPL 해커톤 우승<br/>SUI Global 해커톤 3위</p>
+      </div>
+      <div class="team-member">
+        <svg class="ip" viewBox="0 0 100 100"><rect width="100" height="100" fill="#D7C9D6"/>
+          <g transform="translate(-6,8)">
+            <rect x="10" y="16" width="74" height="62" rx="22" fill="#14A05A"/>
+            <path d="M10 47 q37 16 74 0 v9 q-37 16 -74 0 z" fill="#E6F6EC"/>
+            <circle cx="35" cy="38" r="5.2" fill="#E6F6EC"/><circle cx="59" cy="38" r="5.2" fill="#E6F6EC"/>
+            <rect x="27" y="78" width="15" height="18" rx="7.5" fill="#14A05A"/>
+            <rect x="53" y="78" width="15" height="18" rx="7.5" fill="#14A05A"/>
+          </g></svg>
+        <h3>효창</h3><p>블록체인 백엔드<br/>Solana · 결제</p>
+        <p class="team-cred">연세대학교 블록블록 6기 회장</p>
+      </div>
+    </div>
+    <div class="sketchbox" style="margin-top:2.4rem; text-align:center; max-width:860px;">
+      브랜드를 <b>직접 운영하며 겪은 문제</b>를 풀고 있습니다
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 20. 차별성 ══════ -->
+<section class="slide" id="s20">
+  <h2 class="slide-title">왜 KNOT인가</h2>
+  <div class="slide-content">
+    <div class="edge-row">
+      <div class="edge">
+        <span class="k">Agent</span>
+        <span class="v">결제까지 <b>실행</b>한다<br/>추천만 하는 챗봇이 아니라</span>
+      </div>
+      <div class="edge" style="border-color:#1a73e8;">
+        <img src="logos/googlecloud.svg" alt="" style="height:1.5em;margin-bottom:.3em" onerror="this.remove()"/><span class="k" style="color:#1a73e8;display:block">Google AI</span>
+        <span class="v">에이전트의 <b>두뇌</b><br/>Gemini 분석 · 협상 판단</span>
+      </div>
+      <div class="edge" style="border-color:#0a7d38;">
+        <img src="logos/solana.svg" alt="" style="height:1.5em;margin-bottom:.3em" onerror="this.remove()"/><span class="k" style="color:#0a7d38;display:block">Solana</span>
+        <span class="v">수초 내 <b>정산</b><br/>수수료 사실상 0</span>
+      </div>
+      <div class="edge" style="border-color:#b00;">
+        <span class="k" style="color:#b00;">사람</span>
+        <span class="v">반복 업무에서 <b>해방</b><br/>판단만 남긴다</span>
+      </div>
+    </div>
+    <div class="sketchbox" style="margin-top:2.6rem; text-align:center; max-width:940px;">
+      기존 결제망은 <b>마지막에 사람이 있다</b>는 전제로 설계됐습니다<br/>
+      <span style="color:#666; font-size:0.86em;">에이전틱 커머스에는 그 전제가 없는 레일이 필요합니다</span>
+    </div>
+  </div>
+  <div class="slide-number"></div>
+</section>
+
+<!-- ══════ 21. 클로징 ══════ -->
+<section class="slide center" id="s21">
+  <div class="slide-content">
+    <p class="manifesto-line" style="margin-bottom:0.4rem;">human loop은 <b>선택</b>이 됩니다</p>
+    <div class="sketchbox" style="margin:1.4rem 0 2.4rem; text-align:center; border-color:#b00;">
+      <span style="color:#b00;">우리는 매일 <b>시간을 도둑맞고</b> 있었습니다</span>
+    </div>
+    <svg viewBox="0 0 400 150" style="width:min(420px,52vw); margin-bottom:1.2rem;">
+      <path d="M22 100 C70 98 108 92 146 78 C196 60 250 32 268 62 C284 90 246 128 210 120 C180 113 172 82 200 66 C238 44 300 66 322 86 C344 106 362 108 380 102" stroke-width="7" stroke="#0a0a0a" fill="none"/>
+      <circle cx="22" cy="100" r="6" fill="#0a0a0a" stroke="none"/>
+      <circle cx="380" cy="102" r="6" fill="#0a0a0a" stroke="none"/>
+    </svg>
+    <h2 style="text-align:center;">인증된 에이전트와<br/>사람이 공존하는 세상</h2>
+    <p class="subtitle" style="text-align:center; margin-top:1rem;">시간은 소중하니까</p>
+    <p class="subtitle" style="text-align:center; margin-top:0.3rem;">KNOT · Thank you</p>
+  </div>
+  <div class="slide-footer">Solana Foundation + Google Cloud Korea AI Hackathon 2026</div>
+</section>
+
+<script>
+(function() {
+  const slides = document.querySelectorAll('.slide');
+  let currentSlide = 0;
+  const total = slides.length;
+  slides.forEach((s, i) => {
+    const el = s.querySelector('.slide-number');
+    if (el) el.textContent = (i + 1) + ' / ' + total;
+  });
+
+  const shownDisplay = (s) => s.classList.contains('center') ? 'flex' : 'block';
+  function showSlide(n) {
+    slides.forEach((s, i) => {
+      const on = i === n;
+      s.style.display = on ? shownDisplay(s) : 'none';
+      s.classList.remove('is-active');
+      if (on) { void s.offsetWidth; s.classList.add('is-active'); }
+    });
+  }
+  function nextSlide() { currentSlide = (currentSlide + 1) % total; showSlide(currentSlide); }
+  function prevSlide() { currentSlide = (currentSlide - 1 + total) % total; showSlide(currentSlide); }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+    else if (e.key === 'Home') { e.preventDefault(); currentSlide = 0; showSlide(0); }
+    else if (e.key === 'End') { e.preventDefault(); currentSlide = total - 1; showSlide(currentSlide); }
+    else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); window.print(); }
+  });
+  document.addEventListener('click', (e) => {
+    if (e.clientX > document.body.getBoundingClientRect().width / 2) nextSlide(); else prevSlide();
+  });
+
+  showSlide(0);
+  window.addEventListener('beforeprint', () => {
+    document.querySelectorAll('animate').forEach(a => a.remove());
+    slides.forEach(s => { s.style.display = shownDisplay(s); });
+  });
+  window.addEventListener('afterprint', () => { showSlide(currentSlide); });
+})();
+</script>
+</body>
+</html>

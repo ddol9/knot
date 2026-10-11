@@ -3,6 +3,10 @@
     "pay": {
       "command": "pay",
       "args": ["--sandbox", "mcp"]
+    },
+    "figma-desktop": {
+      "type": "http",
+      "url": "http://127.0.0.1:3845/mcp"
     }
   }
 }

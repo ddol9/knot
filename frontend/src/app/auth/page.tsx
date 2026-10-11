@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * /auth — 신규 앱 로그인. 구글 · 이메일, 브랜드↔크리에이터 토글.
- * 성공하면 백엔드 계정/역할 API를 통과한 뒤 KnotSession을 남기고 역할에 따라 이동한다.
+ * /auth — 신규 앱 로그인. 구글 · 이메일 · 팬텀 지갑, 브랜드↔크리에이터 토글.
+ * 성공하면 KnotSession을 남기고 역할에 따라 /b 또는 /c로 보낸다.
  */
 
 import { Suspense, useState } from "react";
@@ -11,18 +11,15 @@ import { motion } from "framer-motion";
 import "@/demo/demo.css";
 import {
   createFirebaseAccount,
-  currentIdToken,
   firebaseAuthErrorMessage,
   firebaseConfigured,
   signInWithEmail,
   signInWithGoogle,
 } from "@/auth/firebaseClient";
-import { ProductApiClient, type CurrentUserContext } from "@/product/apiClient";
-import { saveSession, type KnotRole } from "@/demo/auth/session";
+import { connectPhantom, isPhantomAvailable, signPhantomMessage } from "@/features/wallet/phantom";
+import { saveSession, shortAddress, type KnotRole } from "@/demo/auth/session";
 import { Yarn } from "@/demo/character/Yarn";
 import { Button } from "@/demo/ui/primitives";
-
-ProductApiClient.setAuthTokenProvider(currentIdToken);
 
 function GoogleIcon() {
   return (
@@ -48,13 +45,13 @@ function AuthInner() {
 
   // to를 명시하지 않으면 현재 토글 역할 기준 — 페르소나 버튼은 역할이 고정이라 명시한다
   // (setRole 직후 done()이 stale 클로저로 잘못된 곳에 보내는 버그 방지).
-  const withBusy = (key: string, fn: () => Promise<string | void>, to?: string) => async () => {
+  const withBusy = (key: string, fn: () => Promise<void>, to?: string) => async () => {
     if (busy) return;
     setBusy(key);
     setError(null);
     try {
-      const target = await fn();
-      router.replace(target ?? to ?? (role === "brand" ? "/b" : "/c"));
+      await fn();
+      router.replace(to ?? (role === "brand" ? "/b" : "/c"));
     } catch (caught) {
       setError(firebaseAuthErrorMessage(caught));
     } finally {
@@ -64,7 +61,6 @@ function AuthInner() {
 
   const google = withBusy("google", async () => {
     const user = await signInWithGoogle();
-    const context = await ensureBackendRole(role);
     saveSession({
       method: "google",
       role,
@@ -73,7 +69,6 @@ function AuthInner() {
       photo: user.photoURL,
       wallet: null,
     });
-    return routeForContext(role, context);
   });
 
   const emailAuth = withBusy("email", async () => {
@@ -81,7 +76,6 @@ function AuthInner() {
       mode === "login"
         ? await signInWithEmail(email.trim(), password)
         : await createFirebaseAccount(email.trim(), password, name);
-    const context = await ensureBackendRole(role);
     saveSession({
       method: "email",
       role,
@@ -90,12 +84,21 @@ function AuthInner() {
       photo: user.photoURL,
       wallet: null,
     });
-    return routeForContext(role, context);
   });
 
-  const wallet = () => {
-    setError("지갑은 로그인 수단이 아니라 에스크로 예치/정산 단계에서 연결합니다. 먼저 Google 또는 이메일로 로그인해 주세요.");
-  };
+  const wallet = withBusy("wallet", async () => {
+    const address = await connectPhantom();
+    // 소유 증명 서명 — 자금 이동 없는 로그인 서명
+    await signPhantomMessage(`knot 로그인\n주소: ${address}\n시각: ${new Date().toISOString()}`);
+    saveSession({
+      method: "wallet",
+      role,
+      name: shortAddress(address),
+      email: null,
+      photo: null,
+      wallet: address,
+    });
+  });
 
   const emailReady = /\S+@\S+\.\S+/.test(email) && password.length >= 6 && (mode === "login" || name.trim());
 
@@ -160,7 +163,11 @@ function AuthInner() {
                 fill="#fff"
               />
             </svg>
-            Phantom은 에스크로 단계에서 연결
+            {busy === "wallet"
+              ? "지갑 서명 대기 중…"
+              : isPhantomAvailable()
+                ? "Phantom 지갑으로 계속하기"
+                : "지갑으로 계속하기 (Phantom 설치 필요)"}
           </button>
         </div>
 
@@ -242,7 +249,6 @@ function AuthInner() {
               onClick={withBusy("persona-brand", async () => {
                 setRole("brand");
                 const user = await signInWithEmail("t1@knot.com", "000000");
-                const context = await ensureBackendRole("brand");
                 saveSession({
                   method: "persona",
                   role: "brand",
@@ -251,7 +257,6 @@ function AuthInner() {
                   photo: user.photoURL,
                   wallet: null,
                 });
-                return routeForContext("brand", context);
               }, "/b")}
               disabled={!!busy || !firebaseConfigured()}
               className="h-9 rounded-lg bg-black/[0.05] text-[12px] font-bold text-[var(--k-ink-soft)] transition-colors hover:bg-black/[0.1] disabled:opacity-40"
@@ -262,7 +267,6 @@ function AuthInner() {
               onClick={withBusy("persona-creator", async () => {
                 setRole("creator");
                 const user = await signInWithEmail("c1@knot.com", "000000");
-                const context = await ensureBackendRole("creator");
                 saveSession({
                   method: "persona",
                   role: "creator",
@@ -271,7 +275,6 @@ function AuthInner() {
                   photo: user.photoURL,
                   wallet: null,
                 });
-                return routeForContext("creator", context);
               }, "/c")}
               disabled={!!busy || !firebaseConfigured()}
               className="h-9 rounded-lg bg-black/[0.05] text-[12px] font-bold text-[var(--k-ink-soft)] transition-colors hover:bg-black/[0.1] disabled:opacity-40"
@@ -283,33 +286,6 @@ function AuthInner() {
       </motion.div>
     </div>
   );
-}
-
-async function ensureBackendRole(role: KnotRole): Promise<CurrentUserContext> {
-  const expected = role === "brand" ? "BRAND" : "CREATOR";
-  const client = new ProductApiClient();
-  const current = await client.getMe();
-  if (current.account.role === expected) return current;
-  if (current.account.role) {
-    throw new Error(
-      `이 계정은 이미 ${current.account.role === "BRAND" ? "브랜드" : "크리에이터"} 역할로 설정되어 있습니다. 해당 역할로 로그인해 주세요.`,
-    );
-  }
-  return client.selectMyRole(expected, uniqueRequestKey(`demo-auth-role-${expected.toLowerCase()}`));
-}
-
-function routeForContext(role: KnotRole, context: CurrentUserContext) {
-  if (role === "creator" && context.account.onboardingStatus !== "COMPLETED") {
-    return "/creator/connect";
-  }
-  return role === "brand" ? "/b" : "/c";
-}
-
-function uniqueRequestKey(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export default function AuthPage() {

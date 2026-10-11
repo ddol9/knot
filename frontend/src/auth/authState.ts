@@ -40,6 +40,12 @@ export function headerMenuForAuth(
   return ["login", "signup"];
 }
 
+// Pages inside this shell get the persistent Sidebar; TopBar drops its own
+// dashboard/mypage links there so the two navs don't repeat each other.
+export function isDashboardShellPath(pathname: string) {
+  return /^\/(brand|creator)(\/|$)/.test(pathname) && !/\/(onboarding|result|connect|rules)(\/|$)/.test(pathname);
+}
+
 export function safeRedirectPath(value: string | null | undefined) {
   if (!value || !value.startsWith("/") || value.startsWith("//")) return null;
   if (value.startsWith("/api/")) return null;

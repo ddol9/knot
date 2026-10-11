@@ -14,7 +14,10 @@ import type { InboundOffer, Mood } from "@/demo/engine/types";
 import { Yarn, KnotTie, StarBurst, YarnMeter } from "@/demo/character/Yarn";
 import { Badge, SectionLabel, LiveDot, usdc } from "@/demo/ui/primitives";
 import { IdentityBlock } from "@/demo/auth/IdentityBlock";
+import { RealChainCard } from "@/demo/real/RealChainCard";
 import { A2ALog, Face, TxRow } from "@/demo/ui/bits";
+import { useUsdcBalance, formatUsdc } from "@/demo/wallet/balance";
+import { useKnotSession } from "@/demo/auth/session";
 
 const hero = creatorById(HERO_ID);
 
@@ -83,6 +86,8 @@ export function CreatorApp() {
   const deal = s.campaign?.deals.find((d) => d.creatorId === HERO_ID);
   const status = s.campaign?.status;
   const walletDelta = useWalletDelta(s.creatorWalletUsdc);
+  const session = useKnotSession();
+  const { balance: realUsdc, delta: realDelta, failed: balanceFailed } = useUsdcBalance(session?.wallet);
   const logRef = useRef<HTMLDivElement>(null);
   const focusRef = useRef<HTMLDivElement>(null);
   const [postUrlInput, setPostUrlInput] = useState("");
@@ -126,20 +131,47 @@ export function CreatorApp() {
           <IdentityBlock variant="header" />
         </div>
         <div className="relative flex items-center gap-2 rounded-xl border border-[var(--k-line)] bg-white px-3 py-1.5">
-          <span className="text-[11px] font-bold text-[var(--k-muted)]">지갑</span>
-          <span className="k-mono text-[14px] font-bold">{usdc(s.creatorWalletUsdc)}</span>
-          <AnimatePresence>
-            {walletDelta && (
-              <motion.span
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: -14 }}
-                exit={{ opacity: 0 }}
-                className="k-mono absolute -top-1 right-2 text-[12px] font-bold text-[var(--k-money)]"
-              >
-                +{walletDelta}
-              </motion.span>
-            )}
-          </AnimatePresence>
+          {session?.wallet ? (
+            <>
+              <span className="text-[11px] font-bold text-[var(--k-muted)]">지갑 · devnet</span>
+              <span className="k-mono text-[14px] font-bold">
+                {realUsdc !== null
+                  ? `${formatUsdc(realUsdc + Math.max(0, s.creatorWalletUsdc - 1240))} USDC`
+                  : balanceFailed
+                    ? "— (조회 실패)"
+                    : "조회 중…"}
+              </span>
+              <AnimatePresence>
+                {(realDelta || walletDelta) && (
+                  <motion.span
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: -14 }}
+                    exit={{ opacity: 0 }}
+                    className="k-mono absolute -top-1 right-2 text-[12px] font-bold text-[var(--k-money)]"
+                  >
+                    +{formatUsdc((realDelta ?? 0) + (realDelta ? 0 : (walletDelta ?? 0)))}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </>
+          ) : (
+            <>
+              <span className="text-[11px] font-bold text-[var(--k-muted)]">정산 누적 · 시뮬레이션</span>
+              <span className="k-mono text-[14px] font-bold">{usdc(s.creatorWalletUsdc)}</span>
+              <AnimatePresence>
+                {walletDelta && (
+                  <motion.span
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: -14 }}
+                    exit={{ opacity: 0 }}
+                    className="k-mono absolute -top-1 right-2 text-[12px] font-bold text-[var(--k-money)]"
+                  >
+                    +{walletDelta}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </>
+          )}
         </div>
       </header>
 
@@ -307,6 +339,8 @@ export function CreatorApp() {
                   </div>
                 </div>
               </div>
+
+              <RealChainCard role="creator" />
 
               {/* 게시물 제출 게이트 — 실제 URL을 내야 다음 스텝 */}
               {deal.awaitingPost && (

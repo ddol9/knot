@@ -169,22 +169,13 @@ function BrandAgentDashboard({ context }: { context: CurrentUserContext }) {
         </section>
       </div>
 
-      <section className="sketch ink border border-border-subtle bg-surface p-5">
-        <SectionHeader eyebrow="매니저 기록" title="만든 프로모션과 협상 결과" />
-        {promotions.length ? (
-          <BrandRecordList
-            promotions={promotions}
-            agreements={agreements}
-            runningPromotionId={runningPromotionId}
-            onRunPromotion={runPromotion}
-          />
-        ) : (
-          <EmptyState
-            title="아직 만든 프로모션이 없습니다"
-            body="프로모션 만들기를 완료하면 이곳에서 기록을 모아보고, 협상 상세로 들어갈 수 있습니다."
-          />
-        )}
-      </section>
+      <Link
+        href="/brand/promotions"
+        className="sketch-alt ink flex items-center justify-between border border-border-subtle bg-surface-raised p-4 text-sm hover:bg-surface"
+      >
+        <span>만든 프로모션과 협상 결과 전체 보기</span>
+        <span className="font-mono text-xs text-muted">{promotions.length}건 →</span>
+      </Link>
     </DashboardShell>
   );
 }
@@ -314,20 +305,13 @@ function CreatorAgentDashboard({ context }: { context: CurrentUserContext }) {
         </section>
       </div>
 
-      <section className="sketch ink border border-border-subtle bg-surface p-5">
-        <SectionHeader eyebrow="매니저 기록" title="받은 제안과 결과" />
-        <div className="grid gap-3">
-          {(dashboard.data?.offers ?? []).slice(0, 5).map((offer, index) => (
-            <OfferRow key={String(offer.negotiationId ?? offer.offerId ?? index)} offer={offer} />
-          ))}
-          {!dashboard.loading && !(dashboard.data?.offers ?? []).length ? (
-            <EmptyState
-              title="표시할 협상 기록이 없습니다"
-              body="브랜드 매니저가 제안을 보내면 공개 가능한 조건과 결과만 이곳에 남습니다."
-            />
-          ) : null}
-        </div>
-      </section>
+      <Link
+        href="/creator/offers"
+        className="sketch-alt ink flex items-center justify-between border border-border-subtle bg-surface-raised p-4 text-sm hover:bg-surface"
+      >
+        <span>받은 제안과 결과 전체 보기</span>
+        <span className="font-mono text-xs text-muted">{(dashboard.data?.offers ?? []).length}건 →</span>
+      </Link>
     </DashboardShell>
   );
 }
@@ -464,71 +448,6 @@ function SettlementOverview({
   );
 }
 
-function BrandRecordList({
-  promotions,
-  agreements,
-  runningPromotionId,
-  onRunPromotion,
-}: {
-  promotions: Array<ApiPromotion & Record<string, unknown>>;
-  agreements: Array<ApiAgreement & Record<string, unknown>>;
-  runningPromotionId: string | null;
-  onRunPromotion: (promotionId: string) => void;
-}) {
-  const agreementByPromotion = new Map(agreements.map((agreement) => [agreement.promotionId, agreement]));
-  return (
-    <div className="grid gap-3">
-      {promotions.map((promotion) => {
-        const agreement = agreementByPromotion.get(promotion.promotionId);
-        const negotiationId = agreement?.negotiationId;
-        const href =
-          typeof negotiationId === "string" && negotiationId
-            ? `/brand/negotiations/${negotiationId}`
-            : `/brand/promotions/${promotion.promotionId}`;
-        return (
-          <div
-            key={promotion.promotionId}
-            className="sketch-alt ink flex flex-wrap items-center justify-between gap-3 border border-border-subtle bg-surface-raised p-4"
-          >
-            <Link href={href} className="min-w-0 flex-1">
-              <span className="min-w-0">
-                <span className="block truncate text-xl">{promotion.title}</span>
-                <span className="font-mono text-xs text-muted">
-                  {promotionStatusLabel(promotion.status)} · {formatTime(String(promotion.updatedAt ?? promotion.createdAt ?? ""))}
-                </span>
-                <span className="mt-1 block text-sm text-muted">
-                  {agreement?.creatorDisplayName ? `${agreement.creatorDisplayName} · ` : ""}
-                  {deliverableSummary(agreement?.terms.deliverables ?? promotion.deliverables)}
-                </span>
-              </span>
-            </Link>
-            <span className="flex items-center gap-3">
-              {agreement ? <Money usdc={agreement.terms.compensation.baseAmountUsdc} /> : null}
-              {agreement ? (
-                <Link
-                  href={href}
-                  className="sketch-pill ink border border-border-subtle bg-surface px-3 py-1 text-sm"
-                >
-                  상세보기
-                </Link>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => onRunPromotion(promotion.promotionId)}
-                  disabled={runningPromotionId === promotion.promotionId}
-                  className="sketch-pill bg-accent px-3 py-1 text-sm text-background disabled:opacity-50"
-                >
-                  {runningPromotionId === promotion.promotionId ? "탐색 중…" : "다시 탐색"}
-                </button>
-              )}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="sketch-alt ink border border-border-subtle bg-background p-3">
@@ -555,70 +474,10 @@ function AgreementRow({ agreement }: { agreement: ApiAgreement & Record<string, 
   );
 }
 
-function OfferRow({ offer }: { offer: Record<string, unknown> }) {
-  const negotiationId = String(offer.negotiationId ?? offer.id ?? "");
-  const status = String(offer.status ?? offer.negotiationStatus ?? "OFFER");
-  const label = String(offer.productTitle ?? offer.title ?? offer.promotionTitle ?? "협찬 제안");
-  const amount = numberFromUnknown(offer.amountUsdc ?? offer.currentAmountUsdc ?? offer.baseAmountUsdc);
-  const work = typeof offer.deliverableSummary === "string" ? offer.deliverableSummary : null;
-  return (
-    <Link
-      href={negotiationId ? `/creator/offers/${negotiationId}` : "/creator"}
-      className="sketch-alt ink flex flex-wrap items-center justify-between gap-3 border border-border-subtle bg-surface-raised p-4"
-    >
-      <span>
-        <span className="block text-xl">{label}</span>
-        <span className="font-mono text-xs text-muted">{offerStatusLabel(status)}</span>
-        {work ? <span className="mt-1 block text-sm text-muted">{work}</span> : null}
-      </span>
-      {amount === null ? <span className="text-sm text-muted">금액 확인 중</span> : <Money usdc={amount} />}
-    </Link>
-  );
-}
-
-function EmptyState({
-  title,
-  body,
-  actionHref,
-  actionLabel,
-}: {
-  title: string;
-  body: string;
-  actionHref?: string;
-  actionLabel?: string;
-}) {
-  return (
-    <div className="sketch-alt ink border border-dashed border-border-subtle bg-background p-5">
-      <p className="text-xl">{title}</p>
-      <p className="mt-2 text-sm text-muted">{body}</p>
-      {actionHref && actionLabel ? (
-        <Link href={actionHref} className="sketch-pill mt-4 inline-flex bg-accent px-4 py-2 text-background">
-          {actionLabel}
-        </Link>
-      ) : null}
-    </div>
-  );
-}
-
 function readableError(caught: unknown) {
   if (caught instanceof ProductApiError) return caught.message;
   if (caught instanceof Error) return caught.message;
   return String(caught);
-}
-
-function numberFromUnknown(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
-  return null;
-}
-
-function formatTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
 }
 
 function baseUnitsToUsdcLabel(value: string | undefined) {
@@ -626,16 +485,6 @@ function baseUnitsToUsdcLabel(value: string | undefined) {
   const raw = Number(value);
   if (!Number.isFinite(raw)) return value;
   return `${(raw / 1_000_000).toLocaleString()} USDC`;
-}
-
-function promotionStatusLabel(status: string) {
-  const normalized = status.toUpperCase();
-  if (normalized === "DRAFT") return "작성 중";
-  if (normalized === "ACTIVE") return "진행 중";
-  if (normalized === "AGREED") return "계약 완료";
-  if (normalized === "PAUSED") return "일시 중지";
-  if (normalized === "CLOSED") return "종료";
-  return status;
 }
 
 function agreementStatusLabel(status: string) {
@@ -649,15 +498,6 @@ function agreementStatusLabel(status: string) {
   return status;
 }
 
-function offerStatusLabel(status: string) {
-  const normalized = status.toUpperCase();
-  if (normalized === "OFFER") return "제안 도착";
-  if (normalized === "PENDING") return "확인 대기";
-  if (normalized === "AGREED" || normalized === "ACCEPTED") return "수락 완료";
-  if (normalized === "REJECTED") return "거절됨";
-  if (normalized === "EXPIRED") return "기간 만료";
-  return status;
-}
 
 function agentPublicationStatusLabel(status: string) {
   const normalized = status.toUpperCase();

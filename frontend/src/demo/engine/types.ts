@@ -24,8 +24,6 @@ export type BrandProfile = {
   /** 사이트에서 추출한 브랜드 로고 (로컬 에셋) */
   logo: string;
   agentName: string;
-  analysisProvider?: string;
-  analysisFallbackReason?: string | null;
 };
 
 export type CampaignSpec = {
@@ -165,21 +163,6 @@ export type CampaignState = {
   deals: Deal[];
   brief: TaskBrief | null;
   reportReady: boolean;
-  live?: {
-    mode: "api";
-    promotionId: string;
-    matchRunId: string;
-    negotiationId: string | null;
-    agreementId: string | null;
-    agreementStatus: string | null;
-    creatorAgentId?: string | null;
-    escrowId?: string | null;
-    escrowStatus?: string | null;
-    fundingSignature?: string | null;
-    evidenceId?: string | null;
-    settlementStatus?: string | null;
-    settlementSignature?: string | null;
-  };
 };
 
 export type AutopilotRun = {
@@ -195,7 +178,6 @@ export type OnboardScan = {
   /** 추출 카드가 하나씩 켜진다: 0=none … 5=완료 */
   step: number;
   done: boolean;
-  error?: string | null;
 };
 
 export type InboundOfferStatus = "new" | "negotiating" | "declined" | "agreed";
@@ -214,6 +196,37 @@ export type InboundOffer = {
   at: number;
 };
 
+/**
+ * 실시간 devnet 증빙 — 대본(feed/txs)과 별개로 실제 백엔드(knot-api → knot-web3)를
+ * 호출해 진짜 프로모션·협상·에스크로·정산을 만든다. 실패해도 대본 연출은 안 끊긴다.
+ */
+export type RealChainStatus =
+  | "idle"
+  | "creating"
+  | "waiting_creator"
+  | "agreed"
+  | "funding"
+  | "funded"
+  | "submitting_evidence"
+  | "released"
+  | "error";
+
+export type RealChainState = {
+  status: RealChainStatus;
+  promotionId: string | null;
+  agreementId: string | null;
+  creatorAgentId: string | null;
+  escrowId: string | null;
+  amountUsdc: number | null;
+  network: string;
+  brandWallet: string | null;
+  creatorWallet: string | null;
+  fundingSignature: string | null;
+  releaseSignature: string | null;
+  milestoneId: string | null;
+  error: string | null;
+};
+
 export type DemoStage = "intro" | "scanning" | "hatch" | "workspace";
 
 export type DemoState = {
@@ -225,9 +238,9 @@ export type DemoState = {
   agentTyping: boolean;
   /** 캠페인 생성 대화가 어디까지 왔나 */
   composeStep: "idle" | "goal" | "budget" | "content" | "confirm" | "done";
+  /** budget 단계에서 고른(칩 또는 직접입력) 값 — confirm/탐험 시점에 소비된다 */
+  pendingBudget: { budgetUsdc: number; maxPerDealUsdc: number } | null;
   campaign: CampaignState | null;
-  /** API에서 들어온 크리에이터 카드. 정적 데모 캐스트와 같은 UI 모델로 정규화한다. */
-  creatorCards: CreatorCard[];
   feed: FeedItem[];
   autopilot: boolean;
   autopilotRun: AutopilotRun | null;
@@ -237,6 +250,8 @@ export type DemoState = {
   creatorWalletUsdc: number;
   /** 크리에이터 창에서 별 펑 연출 트리거 (증가하는 카운터) */
   burstSeq: number;
+  /** 실시간 devnet 증빙 상태 — null이면 아직 시작 안 함 */
+  real: RealChainState | null;
 };
 
 export type DemoAction = (draft: DemoState) => void;

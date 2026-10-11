@@ -214,11 +214,9 @@ export function negotiationBadge(n: Negotiation) {
 
 export function TxRow({ label, hash }: { label: string; hash: string }) {
   return (
-    <div className="grid min-w-0 gap-1 py-2 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)] sm:items-start sm:gap-3">
-      <span className="min-w-0 text-[12.5px] leading-snug text-[var(--k-ink-soft)]">
-        {label}
-      </span>
-      <span className="k-mono k-token rounded-md bg-black/[0.05] px-1.5 py-1 text-[10.5px] leading-snug text-[var(--k-muted)] sm:text-right">
+    <div className="flex items-center justify-between gap-2 py-1.5">
+      <span className="text-[12.5px] text-[var(--k-ink-soft)]">{label}</span>
+      <span className="k-mono shrink-0 rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[11px] text-[var(--k-muted)]">
         {hash}
       </span>
     </div>

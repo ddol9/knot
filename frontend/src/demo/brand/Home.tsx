@@ -5,6 +5,8 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useDemo } from "@/demo/engine/store";
 import { Yarn } from "@/demo/character/Yarn";
+import { useKnotSession } from "@/demo/auth/session";
+import { useUsdcBalance, formatUsdc } from "@/demo/wallet/balance";
 import { Stat, SectionLabel, Badge, Button, LiveDot } from "@/demo/ui/primitives";
 import type { FeedTone, Mood } from "@/demo/engine/types";
 
@@ -58,6 +60,8 @@ export function Home({
   const activeDeals =
     deals.filter((d) => d.starPct < 100).length + (s.autopilotRun?.dealCount ?? 0);
   const st = agentStatus(s);
+  const session = useKnotSession();
+  const { balance: walletUsdc } = useUsdcBalance(session?.wallet);
 
   return (
     <div className="space-y-4">
@@ -88,8 +92,14 @@ export function Home({
       {/* KPI */}
       <div className="flex flex-wrap gap-2.5">
         <Stat
+          label="지갑 잔액 · devnet"
+          value={walletUsdc !== null ? formatUsdc(walletUsdc) : session?.wallet ? "…" : "—"}
+          sub={session?.wallet ? "온체인 실시간 조회" : "지갑을 연결하면 표시돼요"}
+          tone="money"
+        />
+        <Stat
           label="캠페인 예산"
-          value={<>1,000</>}
+          value={c ? c.spec.budgetUsdc.toLocaleString() : "—"}
           sub={`집행 확정 ${committed.toLocaleString()} USDC`}
         />
         <Stat label="활성 딜" value={activeDeals} sub={`체결 누적 ${deals.length + (s.autopilotRun?.dealCount ?? 0)}건`} />

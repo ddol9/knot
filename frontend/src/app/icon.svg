@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- knot 파비콘 — 실타래 -->
+  <circle cx="32" cy="31" r="24" fill="#f3ddb0" stroke="#b8862e" stroke-width="3.5"/>
+  <g stroke="#b8862e" stroke-width="2.4" fill="none" opacity="0.65" stroke-linecap="round">
+    <path d="M12 24 q20 -13 40 0"/>
+    <path d="M10 34 q22 -10 44 -1"/>
+    <path d="M13 43 q19 9 38 1"/>
+  </g>
+  <ellipse cx="24" cy="18" rx="6" ry="3.6" fill="#fff" opacity="0.55" transform="rotate(-24 24 18)"/>
+  <path d="M50 48 q10 5 8 13" stroke="#b8862e" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  <circle cx="25" cy="29" r="2.8" fill="#1b1b18"/>
+  <circle cx="39" cy="29" r="2.8" fill="#1b1b18"/>
+  <path d="M28 38 q4 3.5 8 0" stroke="#1b1b18" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+</svg>
