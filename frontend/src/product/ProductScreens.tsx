@@ -2404,18 +2404,32 @@ function DemoPersonaRow({
       : item.demoPermission
         ? ["허락 브랜드"]
         : ["공개 데이터"];
+  const imageUrl = item.kind === "BRAND" ? item.logoUrl : item.profileImageUrl;
   const disabled = !item.login.canLogin || switchingEmail === item.login.email;
   return (
     <div className="rounded border border-border-subtle bg-background p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <strong className="text-lg">{item.displayName}</strong>
-            <span className="rounded-full border border-border-subtle px-2 py-0.5 text-xs text-muted">
-              {item.kind === "BRAND" ? "Brand" : item.primaryPlatform ?? "Creator"}
-            </span>
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded border border-border-subtle bg-surface text-sm font-semibold">
+            {imageUrl ? (
+              <span
+                aria-hidden="true"
+                className="h-full w-full bg-cover bg-center"
+                style={{ backgroundImage: `url(${imageUrl})` }}
+              />
+            ) : (
+              item.displayName.slice(0, 2)
+            )}
           </div>
-          <p className="mt-1 break-all font-mono text-xs text-muted">{item.profileId}</p>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <strong className="text-lg">{item.displayName}</strong>
+              <span className="rounded-full border border-border-subtle px-2 py-0.5 text-xs text-muted">
+                {item.kind === "BRAND" ? "Brand" : item.primaryPlatform ?? "Creator"}
+              </span>
+            </div>
+            <p className="mt-1 break-all font-mono text-xs text-muted">{item.profileId}</p>
+          </div>
         </div>
         <button
           type="button"

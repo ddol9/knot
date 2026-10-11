@@ -122,7 +122,7 @@ def test_dev_admin_demo_personas_lists_seed_profiles_with_login_state() -> None:
     assert response.status_code == 200
     personas = response.json()["data"]["personas"]
     assert personas["brandCount"] == 10
-    assert personas["creatorCount"] == 10
+    assert personas["creatorCount"] == len(document_set.creator_ids)
     assert personas["loginPasswordHint"] == "000000"
     assert all(item["login"]["canLogin"] for item in personas["brands"])
     assert all(item["login"]["canLogin"] for item in personas["creators"])

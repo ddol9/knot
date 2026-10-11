@@ -1757,3 +1757,288 @@ Updated: 2026-08-20 KST
 - `./.venv/bin/python -m ruff check backend/apps/api/routes.py backend/libs/demo_seed/personas.py backend/scripts/seed_demo_personas.py backend/tests/test_api_onboarding.py backend/tests/test_api_dev_admin.py`:
   passed.
 - `npm --prefix frontend run typecheck`: passed.
+
+## 2026-08-21 Instagram Creator Persona Expansion
+
+### Changed
+
+- Expanded demo creator personas from 10 to 14 by adding Instagram-first
+  creators:
+  - `creator-demo-candofr` (`https://www.instagram.com/candofr/`)
+  - `creator-demo-yubintmi` (`https://www.instagram.com/tmi_07070707/`)
+  - `creator-demo-amisho` (`https://www.instagram.com/amirsho_kh/`)
+  - `creator-demo-creatus` (`https://www.instagram.com/crea__tus/`)
+- Kept the original 10 creators so the Beauty / Tech / Wellness / Crypto /
+  Gaming category coverage remains stable.
+- Relaxed seed validation from exactly 10 creators to at least 10 creators with
+  required category coverage.
+- Cleared the unresolved Instagram candidate list because the requested
+  candidates now have seed persona documents.
+- Added demo-safe profile images:
+  - Brand profiles write `logoUrl` / `logoImageUrl`.
+  - Creator profiles write `profileImageUrl`.
+  - Generated fallback images are marked with `imageSource.provenance =
+    SYNTHETIC_DEMO`.
+- Extended the dev admin demo persona API and card UI to display profile images.
+
+### Verification
+
+- `./.venv/bin/python backend/scripts/seed_demo_personas.py --dry-run --json`:
+  10 brands, 14 creators, 5 promotions, 146 documents, no validation errors.
+
+## 2026-08-21 GCP Demo Workspace UI Bridge
+
+### Changed
+
+- Added the `origin/minsung/live-product` demo workspace shell on this branch:
+  `/b`, `/c`, `/b/graph`, and `/auth`.
+- Changed `/` to enter the brand demo workspace through `/b`.
+- Hid the legacy top navigation on demo workspace routes so the demo shell owns
+  the screen composition.
+- Kept the existing Product API proxy and added `PATCH` / `DELETE` forwarding.
+- Connected the demo "탐험 보내기" action to real Product API paths:
+  - `POST /api/v1/promotions/{promotionId}/matches:run`
+  - `GET /api/v1/match-runs/{matchRunId}/candidates`
+  - `POST /api/v1/match-runs/{matchRunId}/start-negotiation`
+  - `GET /api/v1/negotiations/{negotiationId}/messages`
+- In API mode, the post-agreement CTA now stops at wallet funding when the
+  Agreement status is `FUNDING_REQUIRED`; the UI no longer fabricates escrow
+  transaction hashes for that state.
+
+### Verification
+
+- `npm --prefix frontend run typecheck`: passed.
+- `npm --prefix frontend test`: 21 passed.
+- `npm --prefix frontend run build`: passed.
+- Local production server with
+  `KNOT_API_BASE_URL=https://knot-api-7k3walthgq-uc.a.run.app`:
+  - `/` returns `307` to `/b`.
+  - `/b` returns `200`.
+  - `/b/graph` returns `200`.
+  - `/auth` returns `200`.
+  - `/demo/ssin.jpg` and `/demo/moodbeam.svg` return `200`.
+  - `/api/v1/promotions/promotion-demo-cheriexx` returns `200` through the
+    frontend proxy.
+- Real GCP API verification through the local web proxy:
+  - Match run `match-adfdd549-5f67-4e9c-bef6-a0c4ef4887ca` completed with 5
+    candidates and selected `creator-demo-ssin`.
+  - pay.sh/x402 candidate verification recorded sandbox status `SETTLED` with
+    0.02 USDC.
+  - A2A negotiation `negotiation-d21ed516-bfbc-46b6-84c0-34f11490999b`
+    completed as `AGREED` after a counter round.
+  - Agreement `agreement-df342c24-62a4-41e8-b12b-af70141ede8b` was created with
+    status `FUNDING_REQUIRED`.
+  - Escrow read for that Agreement returned `escrow: null`, `settlements: []`.
+
+### Scope Guard
+
+- No Cloud Run redeploy has been performed for this UI branch yet.
+- No wallet funding or Solana devnet escrow transaction was performed in this
+  pass.
+
+## 2026-08-21 Demo Workspace Escrow And Settlement Bridge
+
+### Changed
+
+- Connected the demo workspace approval CTA to the real wallet-backed escrow
+  funding path:
+  - Phantom connect
+  - wallet ownership challenge/signature
+  - `POST /api/v1/agreements/{agreementId}/escrow/prepare`
+  - Phantom Solana transaction signature
+  - `POST /api/v1/agreements/{agreementId}/escrow/confirm`
+- Connected creator post URL submission in the demo workspace to the real
+  evidence and settlement path:
+  - `POST /api/v1/agreements/{agreementId}/evidence`
+  - `POST /api/v1/evidence/{evidenceId}:verify`
+  - refresh `GET /api/v1/agreements/{agreementId}/escrow`
+  - reflect confirmed settlement signatures in the deal timeline.
+- Added demo creator settlement wallet fields to persona seed documents. These
+  are synthetic devnet demo destinations, not public creator data.
+
+### Verification
+
+- `npm --prefix frontend run typecheck`: passed.
+- `npm --prefix frontend test`: 21 passed.
+- `npm --prefix frontend run build`: passed.
+- `./.venv/bin/python -m ruff check backend/libs/demo_seed/personas.py`:
+  passed.
+- `./.venv/bin/python backend/scripts/seed_demo_personas.py --dry-run --json`:
+  10 brands, 14 creators, 5 promotions, 146 documents, no validation errors.
+- `git diff --check`: passed.
+- `./.venv/bin/pytest backend/tests/test_demo_persona_seed.py backend/tests/test_api_escrow.py backend/tests/test_api_promotions.py -q`:
+  61 passed, 2 warnings.
+
+### Scope Guard
+
+- No actual Phantom signing, escrow funding, or milestone release was executed
+  by this code change.
+- The deployed Firestore seed must be refreshed before live funding, otherwise
+  existing creator personas may still lack `walletAddress` and escrow prepare
+  will return `CREATOR_WALLET_REQUIRED`.
+
+### Deploy And Live QA
+
+- Refreshed Firestore demo persona seed after approval:
+  146 documents written, 26 Firebase Auth users updated, no validation errors.
+- Deployed `knot-web` image
+  `us-central1-docker.pkg.dev/knot-dev-503505/knot/knot-web:0745014` to Cloud
+  Run revision `knot-web-00030-h5n`, serving 100% traffic.
+- Live Cloud Run web URL:
+  `https://knot-web-7k3walthgq-uc.a.run.app`
+- Live route smoke:
+  - `/b`: 200
+  - `/c`: 200
+  - `/b/graph`: 200
+  - `/api/v1/promotions/promotion-demo-cheriexx`: 200
+- Live API smoke from deployed web proxy:
+  - Matching run `match-c33a3f3a-6b7f-4029-a96e-c9d7683adaf0` completed with
+    5 candidates.
+  - pay.sh/x402 sandbox verification receipt was recorded with
+    `status=SETTLED`, `amountUsdc=0.02`.
+  - A2A negotiation
+    `negotiation-c8140ea4-2d1c-4ae5-b90c-3786eb532462` completed
+    `AGREED` through the Cloud Run Creator Agent HTTP endpoint.
+  - Agreement `agreement-3bca7dfd-ec3a-4329-92ee-4f433451c96f` was created
+    with `status=FUNDING_REQUIRED`.
+  - Agreement escrow read returned `escrow=null`, `settlements=[]`, which is
+    expected before the Brand signs the Phantom funding transaction.
+  - Authenticated demo brand `/api/v1/me` returned
+    `uid=user-brand-demo-cheriexx`, `role=BRAND`,
+    `brandId=brand-demo-cheriexx`, `agentId=agent-demo-brand-cheriexx`.
+  - Deployed Firestore creator profile `creator-demo-ssin` contains
+    `walletAddress=BTsMioiaKhxQzPBJV2hNYp6xHovY85dnE73v6CSqRQsX`,
+    `walletNetwork=devnet`, and
+    `walletCustody=DEMO_SEEDED_DESTINATION`.
+
+### Remaining Live Step
+
+- Final escrow funding and settlement release still require an operator with
+  Phantom on devnet to sign the funding transaction from the Brand wallet and
+  then submit a valid content URL. The UI is now wired to call the real prepare,
+  confirm, evidence, verify, and settlement paths for that signed flow.
+
+## 2026-08-21 Demo UI Font And Overflow Fix
+
+### Changed
+
+- Restored the `PretendardVariable.woff2` local font from the live product UI
+  source branch and registered `--font-pretendard` in the app layout.
+- Added demo-scoped wrapping rules for monospaced tokens so long Solana
+  signatures, terms hashes, IDs, and URLs stay inside cards.
+- Updated the shared `TxRow` component used by Brand and Creator settlement
+  panels. Transaction rows now use responsive grid layout and wrap the hash
+  within the card instead of forcing horizontal overflow.
+
+### Verification
+
+- `npm --prefix frontend run typecheck`: passed.
+- `npm --prefix frontend test`: 21 passed.
+- `npm --prefix frontend run build`: passed.
+- `git diff --check`: passed.
+
+### Scope Guard
+
+- No deployed environment or on-chain state was changed by this UI polish pass.
+
+## 2026-08-21 Demo Onboarding Real API Wiring
+
+### Changed
+
+- Removed the successful local/mock fallback from the `/b` brand onboarding
+  scan path. The demo onboarding now completes only after the real Product API
+  creates or returns the authenticated user's Brand profile and Brand Agent.
+- Connected `/auth` login/signup/persona entry to the backend account role
+  path. After Firebase login, the UI calls `GET /api/v1/me` and, when needed,
+  `POST /api/v1/me/role` before routing into `/b` or `/c`.
+- Disabled Phantom-only login as a successful account path because the product
+  does not currently issue Firebase custom auth tokens from wallet signatures.
+  Phantom remains a real wallet connection step for escrow funding and
+  settlement.
+- Added backend-role guards to `/b` and `/c`, so stale local demo sessions no
+  longer open the workspace without a matching authenticated Product API role.
+- Updated the demo identity wallet connection to save the wallet through
+  backend challenge/signature verification before updating the local display.
+
+### Verification
+
+- `npm --prefix frontend run typecheck`: passed.
+- `npm --prefix frontend test`: 21 passed.
+- `npm --prefix frontend run build`: passed.
+- `git diff --check`: passed.
+
+### Scope Guard
+
+- No deployment, Firestore write, Secret Manager change, wallet funding, or
+  Solana transaction was performed in this pass.
+- Creator onboarding was already wired to `POST /api/v1/analyses/creator-profile`
+  and `POST /api/v1/me/creator-profile`; this pass focused on the demo `/auth`,
+  `/b`, and `/c` paths that could previously succeed with local state alone.
+
+### Deploy And Live QA
+
+- Built web image
+  `us-central1-docker.pkg.dev/knot-dev-503505/knot/knot-web:e989fd7`
+  with Cloud Build `d213eed7-db94-41af-bea3-562cca34a878`.
+- Deployed Cloud Run service `knot-web` revision `knot-web-00031-x7w`, serving
+  100% traffic.
+- Live Cloud Run web URL:
+  `https://knot-web-7k3walthgq-uc.a.run.app`
+- Live route/API smoke:
+  - `/b`: 200
+  - `/c`: 200
+  - `/auth`: 200
+  - `/b/graph`: 200
+  - `/api/v1/promotions/promotion-demo-cheriexx`: 200
+- Authenticated brand onboarding smoke through the deployed web proxy:
+  - `GET /api/v1/me`: role `BRAND`, status `COMPLETED`,
+    brand `brand-demo-cheriexx`, agent `agent-demo-brand-cheriexx`.
+  - `POST /api/v1/analyses/product`: `READY_FOR_CONFIRMATION`, provider
+    `vertex-gemini`, no fallback.
+  - `POST /api/v1/analyses/{analysisId}:confirm`: `CONFIRMED`.
+  - `POST /api/v1/me/brand-profile`: returned existing completed brand profile
+    and agent.
+- Authenticated creator onboarding smoke through the deployed web proxy:
+  - `GET /api/v1/me`: role `CREATOR`, status `COMPLETED`,
+    creator `creator-demo-ssin`, agent `agent-demo-creator-ssin`.
+  - YouTube profile analysis endpoint returned `READY_FOR_CONFIRMATION`; the
+    tested `@geekble` URL used deterministic limited analysis because oEmbed
+    returned `youtube_oembed_http_404`.
+  - Instagram profile analysis endpoint returned `READY_FOR_CONFIRMATION`,
+    provider `apify-instagram-profile-scraper`, no fallback.
+- Escrow read smoke returned `escrow=null`, `settlements=[]` for a
+  `FUNDING_REQUIRED` Agreement. No Phantom signature, escrow funding, or
+  settlement release was executed.
+
+## 2026-08-21 One-Role Account Error Copy
+
+### Changed
+
+- Preserved the backend v1 account invariant: one Firebase account can only
+  select one KNOT role.
+- Mapped the Product API `ROLE_ALREADY_SELECTED` problem code to Korean
+  user-facing guidance:
+  "KNOT v1에서는 한 계정에 하나의 역할만 사용할 수 있습니다. 브랜드 데모는
+  t1, 크리에이터 데모는 c1 계정으로 각각 입장해 주세요."
+- Added frontend API client test coverage so the backend English detail is not
+  exposed directly in role-conflict flows.
+
+### Verification
+
+- `npm --prefix frontend run typecheck`: passed.
+- `npm --prefix frontend test`: 22 passed.
+- `npm --prefix frontend run build`: passed.
+- `git diff --check`: passed.
+
+### Deploy And Live QA
+
+- Built web image
+  `us-central1-docker.pkg.dev/knot-dev-503505/knot/knot-web:daabc81`
+  with Cloud Build `388528e0-6722-4a34-a401-5e6290969f9c`.
+- Deployed Cloud Run service `knot-web` revision `knot-web-00032-xd2`, serving
+  100% traffic.
+- Live Cloud Run web URL:
+  `https://knot-web-7k3walthgq-uc.a.run.app`
+- Live route smoke:
+  - `/auth`: 200
+  - `/b`: 200

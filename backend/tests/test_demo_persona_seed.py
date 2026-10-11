@@ -23,7 +23,7 @@ def test_demo_persona_documents_cover_required_brands_creators_and_categories() 
 
     assert validate_demo_persona_documents(document_set) == []
     assert len(document_set.brand_ids) == 10
-    assert len(document_set.creator_ids) == 10
+    assert len(document_set.creator_ids) >= 10
 
     by_path = {path: document for path, document in document_set.documents}
     category_counts = {

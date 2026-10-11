@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from apps.api.agent_ops_routes import build_agent_ops_router
 from apps.api.repository_factory import build_repository
 from apps.api.routes import build_api_router
 from libs.observability.middleware import add_request_context
@@ -34,6 +35,7 @@ def create_app(
         }
 
     app.include_router(build_api_router(repository, settings))
+    app.include_router(build_agent_ops_router(repository))
 
     return app
 

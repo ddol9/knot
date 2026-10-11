@@ -5032,6 +5032,7 @@ def _admin_demo_brand_projection(
         "kind": "BRAND",
         "profileId": brand_id,
         "displayName": brand.get("displayName"),
+        "logoUrl": brand.get("logoUrl") or brand.get("logoImageUrl"),
         "categories": _string_list(brand.get("categories")),
         "description": brand.get("description"),
         "websiteUrl": brand.get("websiteUrl"),

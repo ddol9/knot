@@ -4,7 +4,7 @@ import { firebaseAuthErrorMessage } from "../src/auth/firebaseClient";
 import { getDashboardPath, headerMenuForAuth, postLoginPath, safeRedirectPath } from "../src/auth/authState";
 import { accountRoutes, appRoutes, brandWorkspaceRoutes, creatorWorkspaceRoutes, roleHome, roleNegotiation, roleResult } from "../src/product/flow";
 import { createKnotDataSource, resolveDataMode } from "../src/product/dataSource";
-import { ProductApiClient, type ApiPromotion } from "../src/product/apiClient";
+import { ProductApiClient, ProductApiError, type ApiPromotion } from "../src/product/apiClient";
 import {
   calculateBrandEscrow,
   calculateCreatorSettlement,
@@ -636,6 +636,39 @@ test("API client forwards Firebase bearer token when configured", async () => {
     const context = await new ProductApiClient("").getMe();
     assert.equal(context.account.uid, "firebase-uid");
     assert.equal(observedAuthorization, "Bearer firebase-test-token");
+  } finally {
+    ProductApiClient.setAuthTokenProvider(null);
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("API client maps one-role account conflicts to demo-friendly Korean copy", async () => {
+  const previousFetch = globalThis.fetch;
+  ProductApiClient.setAuthTokenProvider(async () => "firebase-test-token");
+
+  globalThis.fetch = (async () =>
+    Response.json(
+      {
+        detail: {
+          title: "Conflict",
+          code: "ROLE_ALREADY_SELECTED",
+          detail: "A KNOT v1 account can only have one role.",
+        },
+      },
+      { status: 409 },
+    )) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () => new ProductApiClient("").selectMyRole("CREATOR", "role-conflict-test"),
+      (caught: unknown) => {
+        assert.ok(caught instanceof ProductApiError);
+        assert.equal(caught.code, "ROLE_ALREADY_SELECTED");
+        assert.match(caught.message, /한 계정에 하나의 역할/);
+        assert.match(caught.message, /브랜드 데모는 t1/);
+        return true;
+      },
+    );
   } finally {
     ProductApiClient.setAuthTokenProvider(null);
     globalThis.fetch = previousFetch;

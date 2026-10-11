@@ -65,7 +65,8 @@ Additional public-data demo brands, not represented as KNOT customers:
 
 ## Creator List
 
-The demo keeps 10 creator profiles across five matching categories. The product
+The demo keeps the original 10 category-coverage creators and adds 4
+Instagram-first creator personas for the cold-DM/live-demo story. The product
 currently uses canonical category key `fitness`; in demo copy this maps to
 Wellness.
 
@@ -82,18 +83,20 @@ Wellness.
 | Gaming | 도티 TV | `creator-demo-dotti` | YouTube |
 | Gaming | 김성회의 G식백과 | `creator-demo-g-sik` | YouTube |
 
-The originally requested Instagram candidates are recorded as unresolved unless
-an official account is verified by a provider:
+Additional Instagram-first personas:
 
-| Candidate | Status |
-|---|---|
-| `@candofr` | `UNRESOLVED` |
-| 유빈이TMI | `UNRESOLVED` |
-| 아미쇼 | `UNRESOLVED` |
-| 크리투스 | `UNRESOLVED` |
+| Creator | ID | Instagram |
+|---|---|---|
+| 이차녕 @candofr | `creator-demo-candofr` | `https://www.instagram.com/candofr/` |
+| 유빈이TMI | `creator-demo-yubintmi` | `https://www.instagram.com/tmi_07070707/` |
+| 아미쇼 | `creator-demo-amisho` | `https://www.instagram.com/amirsho_kh/` |
+| 크리투스 | `creator-demo-creatus` | `https://www.instagram.com/crea__tus/` |
 
 The unresolved list is stored in
-`analysisJobs/demo-persona-unresolved-candidates`.
+`analysisJobs/demo-persona-unresolved-candidates`; it is currently empty for
+the requested Instagram additions. Some public metrics remain marked
+`FIXTURE_PENDING_PROVIDER_REFRESH` or `PUBLIC_THIRD_PARTY_OR_PROVIDER` until a
+successful provider refresh writes a current `socialSnapshots/*` document.
 
 ## Social Collection
 
@@ -179,6 +182,12 @@ The seed writes these canonical collections:
 | `promotions/{promotionId}` | Five demo promotions, one per core industry |
 | `analysisJobs/{id}` | Unresolved public-account verification notes |
 
+Brand profiles include `logoUrl` / `logoImageUrl`. Creator profiles include
+`profileImageUrl`. If a provider returns a public SNS profile image, the seed
+uses it. Otherwise the field points to a generated demo initials image and
+stores `imageSource.provenance = SYNTHETIC_DEMO`, so it is not presented as an
+official brand logo or verified creator photo.
+
 ## Matching Connection
 
 The generated creator discovery profiles satisfy the current hard filters:
@@ -238,6 +247,11 @@ Creator policies intentionally differ so negotiation outcomes are not identical:
 
 All policy values are synthetic and use low USDC values for devnet/faucet-safe
 demo runs.
+
+Demo creator profiles also include a devnet settlement destination so the live
+escrow demo can be funded without presenting a real creator's private wallet as
+public data. The wallet fields are marked in `syntheticFields` and use
+`walletCustody = DEMO_SEEDED_DESTINATION`.
 
 ## Commands
 

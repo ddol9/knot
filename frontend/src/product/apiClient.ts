@@ -536,6 +536,7 @@ export type ApiDemoBrandPersona = {
   kind: "BRAND";
   profileId: string;
   displayName: string;
+  logoUrl?: string | null;
   categories: string[];
   description?: string | null;
   websiteUrl?: string | null;
@@ -1184,7 +1185,9 @@ export class ProductApiClient {
 
 function toApiError(status: number, body: unknown) {
   if (isProblemEnvelope(body)) {
-    const message = typeof body.detail.detail === "string" ? body.detail.detail : body.detail.title;
+    const message =
+      userFacingProblemMessage(body.detail.code) ??
+      (typeof body.detail.detail === "string" ? body.detail.detail : body.detail.title);
     return new ProductApiError(message, status, body.detail.code, body.detail);
   }
   if (isFastApiValidationEnvelope(body)) {
@@ -1196,6 +1199,16 @@ function toApiError(status: number, body: unknown) {
     );
   }
   return new ProductApiError(`요청이 실패했습니다. 상태 코드: ${status}`, status, "API_ERROR", body);
+}
+
+function userFacingProblemMessage(code: string) {
+  if (code === "ROLE_ALREADY_SELECTED") {
+    return "KNOT v1에서는 한 계정에 하나의 역할만 사용할 수 있습니다. 브랜드 데모는 t1, 크리에이터 데모는 c1 계정으로 각각 입장해 주세요.";
+  }
+  if (code === "FORBIDDEN") {
+    return "현재 계정 권한으로는 이 작업을 할 수 없습니다. 로그인한 역할과 화면을 확인해 주세요.";
+  }
+  return null;
 }
 
 function isProblemEnvelope(value: unknown): value is {
