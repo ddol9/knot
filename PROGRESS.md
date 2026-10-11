@@ -1,26 +1,34 @@
 # 리팩토링 진행 상황
 
-> 실시간 업데이트 - 마지막 수정: 2026-10-12
+> 실시간 업데이트 - 마지막 수정: 2026-10-12 (Phase 1.1 완료!)
 
 ---
 
-## 📊 전체 진행률: 5%
+## 📊 전체 진행률: 15%
 
 ```
-[██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 5%
+[██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 15%
 
-Phase 1: Agent Ops     [░░░░░░░░░░] 0%
+Phase 1: Agent Ops     [███░░░░░░░] 33%  ✅ Phase 1.1 완료
 Phase 2: MCP           [░░░░░░░░░░] 0%
 Phase 3: Multi LLM     [░░░░░░░░░░] 0%
 Phase 4: RAG Pipeline  [░░░░░░░░░░] 0%
-Phase 5: Spec Driven   [░░░░░░░░░░] 0%
+Phase 5: Spec Driven   [██░░░░░░░░] 20%  ✅ AgentSpec 완료
 ```
 
 ---
 
 ## ✅ 완료된 작업
 
-### 2026-10-12
+### 2026-10-12 오후 - Phase 1.1 완료! 🎉
+- [x] **Agent Registry 구현 완료**
+  - AgentSpec Pydantic 모델 (Spec Driven Development)
+  - AgentRegistry 클래스 (register, get, list, deploy, rollback)
+  - FastAPI 라우트 6개 (등록/조회/목록/배포/롤백/상태변경)
+  - 단위 테스트 작성 (test_agent_registry.py)
+  - Git 커밋 & 푸시 (commit: be30642)
+
+### 2026-10-12 오전 - 문서화
 - [x] SKT JD 분석 및 핵심 키워드 추출
 - [x] Agent Ops 플랫폼 아키텍처 설계
 - [x] MCP 기반 Data Engine 연동 설계
@@ -33,17 +41,25 @@ Phase 5: Spec Driven   [░░░░░░░░░░] 0%
 
 ## 🚧 진행 중
 
-### Phase 1: Agent Ops 플랫폼 기반 (0%)
+### Phase 1: Agent Ops 플랫폼 기반 (33% 완료)
 
 **목표**: Agent 생명주기 관리 + LangSmith + Governance
 
-#### 1.1 Agent Registry
-- [ ] `backend/libs/agent_ops/registry.py` 생성
-- [ ] `AgentSpec` Pydantic 모델 정의
-- [ ] Agent 등록/조회/배포 API 구현
-- [ ] Firestore에 Agent 메타데이터 저장
+#### 1.1 Agent Registry ✅ **완료!**
+- [x] `backend/libs/agent_ops/registry.py` 생성
+- [x] `AgentSpec` Pydantic 모델 정의
+- [x] Agent 등록/조회/배포 API 구현
+- [x] Firestore에 Agent 메타데이터 저장
+- [x] FastAPI 라우트 구현
+- [x] 단위 테스트 작성
 
-#### 1.2 LangSmith 통합
+**구현된 기능:**
+- AgentSpec: agent_id, version, role, model_provider, tools, policy_constraints
+- AgentStatus Enum: DRAFT, TESTING, DEPLOYED, DEPRECATED
+- AgentRegistry: register, get, list, deploy, rollback, update_status
+- API 엔드포인트: POST/GET /api/v1/agents, deploy, rollback, status
+
+#### 1.2 LangSmith 통합 (다음 작업)
 - [ ] LangSmith API 키 설정
 - [ ] `@traceable` 데코레이터 적용
 - [ ] Agent 실행 추적 테스트
