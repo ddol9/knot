@@ -7,6 +7,7 @@ from typing import Protocol
 
 from libs.domain.categories import category_set
 from libs.domain.models import CreatorProfile, Promotion
+from libs.observability.langsmith import traceable
 from libs.payments import PaymentReceipt, PayShError, verify_creator
 from libs.repositories.firestore_paths import COLLECTIONS
 from libs.repositories.serialization import DocumentData
@@ -106,6 +107,7 @@ class RankedDiscoveryCandidate:
     projection: DocumentData
 
 
+@traceable(run_type="chain", name="DiscoveryRanking", tags=["agent:discovery", "phase:ranking"])
 def rank_discovery_candidates(
     promotion: Promotion,
     projections: Sequence[Mapping[str, object]],
@@ -166,6 +168,7 @@ class VerifiedCandidate:
     verification_passed: bool
 
 
+@traceable(run_type="tool", name="CreatorVerification", tags=["agent:discovery", "phase:verification", "tool:paysh"])
 def verify_candidates(
     detailed: Sequence[tuple[RankedDiscoveryCandidate, CreatorProfile]],
     *,

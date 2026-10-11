@@ -13,6 +13,7 @@ from libs.domain.models import (
     TermConstraints,
     TermDeliverable,
 )
+from libs.observability.langsmith import traceable
 from libs.payments.settlement import (
     CONTENT_MILESTONE_ID,
     DEFAULT_DEPOSIT_PCT,
@@ -20,6 +21,7 @@ from libs.payments.settlement import (
 )
 
 
+@traceable(run_type="chain", name="CreatorSelection", tags=["agent:brand", "phase:selection"])
 def select_creator_for_negotiation(
     promotion: Promotion, creators: list[CreatorProfile]
 ) -> CreatorProfile | None:
@@ -32,6 +34,7 @@ def select_creator_for_negotiation(
     )
 
 
+@traceable(run_type="tool", name="InitialTermsBuilder", tags=["agent:brand", "phase:terms-building"])
 def build_initial_terms(
     promotion: Promotion,
     creator: CreatorProfile,

@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 
 from libs.domain.categories import category_matches, category_set
 from libs.domain.models import CreatorProfile, Promotion
+from libs.observability.langsmith import traceable
 
 MATCHING_WEIGHTS_VERSION = "matching-v1"
 
@@ -23,6 +24,7 @@ class MatchResult(BaseModel):
     rank: int | None = None
 
 
+@traceable(run_type="chain", name="CreatorRanking", tags=["agent:matching", "phase:ranking"])
 def rank_creators(promotion: Promotion, creators: list[CreatorProfile]) -> list[MatchResult]:
     results = [score_creator(promotion, creator) for creator in creators]
     results.sort(
@@ -43,6 +45,7 @@ def rank_creators(promotion: Promotion, creators: list[CreatorProfile]) -> list[
     return results
 
 
+@traceable(run_type="tool", name="CreatorScoring", tags=["agent:matching", "phase:scoring"])
 def score_creator(promotion: Promotion, creator: CreatorProfile) -> MatchResult:
     hard_filter_reasons = hard_filter_creator(promotion, creator)
     component_scores = ComponentScores(

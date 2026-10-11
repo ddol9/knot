@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from libs.a2a.models import NegotiationMessageType, NegotiationPayload
 from libs.domain.hashing import terms_hash
 from libs.domain.models import AgreementTerms, CreatorPolicy, Promotion
+from libs.observability.langsmith import traceable
 from libs.policies.creator import validate_creator_terms
 from libs.policies.decision import PolicyDecision
 
@@ -28,6 +29,7 @@ class CreatorNegotiationContext(BaseModel):
     max_rounds: int = Field(default=5, alias="maxRounds")
 
 
+@traceable(run_type="agent", name="CreatorNegotiationEvaluation", tags=["agent:creator", "phase:negotiation"])
 def evaluate_creator_message(
     context: CreatorNegotiationContext,
     payload: NegotiationPayload,
