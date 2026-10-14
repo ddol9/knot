@@ -40,6 +40,7 @@ from libs.agents.brand_negotiator import (
     NegotiationTurn,
 )
 from libs.domain.models import CreatorProfile, Promotion
+from libs.policies.governance import GovernanceDecision, GovernanceRules, evaluate_settlement
 from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
 
@@ -206,6 +207,7 @@ class CampaignRunner:
         brand: dict[str, Any] | None = None,
         promotion_document: dict[str, Any] | None = None,
         settlement_hook: SettlementHook | None = None,
+        governance: GovernanceRules | None = None,
     ) -> None:
         self._repository = repository
         self._promotion = promotion
@@ -214,6 +216,8 @@ class CampaignRunner:
             by_alias=True, mode="json"
         )
         self._settlement_hook = settlement_hook
+        # None = no guardrail: every agreement goes straight to the settlement hook.
+        self._governance = governance
         self._strategy = strategy
         self._transport_factory = transport_factory
         self._default_base_url = default_base_url
@@ -244,6 +248,7 @@ class CampaignRunner:
             default_base_url=self._default_base_url,
             endpoint_overrides=self._endpoint_overrides,
             card_probe=self._probe if self._probe_cards else None,
+            governance=self._governance,
         )
         self._emit("discovery", data={"report": report.model_dump(by_alias=True, mode="json")})
         self._persist_match_run(report)
@@ -363,7 +368,7 @@ class CampaignRunner:
                         "status": agreement["status"],
                     },
                 )
-                self._settle(negotiation, agreement)
+                self._settle(negotiation, agreement, committed_usdc=ledger.committed_usdc)
                 self._persist_candidate(negotiation)
 
         with ThreadPoolExecutor(max_workers=strategy.parallelism) as pool:
@@ -446,8 +451,23 @@ class CampaignRunner:
         negotiation.terms_hash = str(agreement["termsHash"])
         return agreement
 
-    def _settle(self, negotiation: CandidateNegotiation, agreement: dict[str, Any]) -> None:
+    def _settle(
+        self, negotiation: CandidateNegotiation, agreement: dict[str, Any], *, committed_usdc: int
+    ) -> None:
+        """Lock escrow through the hook, unless governance says a person must approve first.
+
+        `committed_usdc` is the ledger total after this agreement was committed."""
         agent_id = negotiation.creator_agent_id
+        if self._governance is not None:
+            decision = evaluate_settlement(
+                self._governance,
+                agreement_amount_usdc=int(agreement["currentAmountUsdc"]),
+                campaign_committed_usdc=committed_usdc,
+                promotion=self._promotion,
+            )
+            if decision.requires_approval:
+                self._queue_approval(negotiation, agreement, decision, committed_usdc)
+                return
         if self._settlement_hook is None:
             escrow: dict[str, Any] = {"status": "SKIPPED", "reason": "NO_SETTLEMENT_HOOK"}
         else:
@@ -461,6 +481,62 @@ class CampaignRunner:
             status, "escrow_failed"
         )
         self._emit(event, agent_id, {"agreementId": agreement["agreementId"], **escrow})
+
+    def _queue_approval(
+        self,
+        negotiation: CandidateNegotiation,
+        agreement: dict[str, Any],
+        decision: GovernanceDecision,
+        committed_usdc: int,
+    ) -> None:
+        """Park the escrow lock in `approvals/{id}` for a person; the agreement stays agreed."""
+        agent_id = negotiation.creator_agent_id
+        agreement_id = str(agreement["agreementId"])
+        approval_id = f"approval-{uuid4()}"
+        amount = int(agreement["currentAmountUsdc"])
+        now = _now()
+        self._repository.save_raw_document(
+            FirestorePaths.approval(approval_id),
+            {
+                "approvalId": approval_id,
+                "type": "ESCROW_LOCK",
+                "status": "PENDING",
+                "promotionId": self._promotion.promotion_id,
+                "campaignId": self._campaign_id,
+                "matchRunId": self._match_run_id,
+                "agreementId": agreement_id,
+                "creatorAgentId": agent_id,
+                "creatorId": self._creator_id_by_agent.get(agent_id, agent_id),
+                "amountUsdc": amount,
+                "campaignCommittedUsdc": committed_usdc,
+                "reasons": list(decision.reasons),
+                "ruleVersion": decision.rule_version,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+        )
+        agreement_path = FirestorePaths.agreement(agreement_id)
+        stored = self._repository.get_raw_document(agreement_path) or agreement
+        self._repository.save_raw_document(
+            agreement_path, {**stored, "approvalId": approval_id, "approvalStatus": "PENDING"}
+        )
+        negotiation.escrow = {
+            "status": "PENDING_APPROVAL",
+            "approvalId": approval_id,
+            "reasons": list(decision.reasons),
+        }
+        self._emit(
+            "approval_required",
+            agent_id,
+            {
+                "agreementId": agreement_id,
+                "approvalId": approval_id,
+                "amountUsdc": amount,
+                "campaignCommittedUsdc": committed_usdc,
+                "reasons": list(decision.reasons),
+                "ruleVersion": decision.rule_version,
+            },
+        )
 
     def _on_turn(self, agent_id: str, turn: NegotiationTurn) -> None:
         self._emit("turn", agent_id, turn.model_dump(by_alias=True, mode="json"))
