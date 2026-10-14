@@ -34,12 +34,14 @@ def select_creator_for_negotiation(
 
 def build_initial_terms(
     promotion: Promotion,
-    creator: CreatorProfile,
+    creator: CreatorProfile | None,
     *,
     base_amount_usdc: int | None = None,
 ) -> AgreementTerms:
     amount = base_amount_usdc
     if amount is None:
+        if creator is None:
+            raise ValueError("base_amount_usdc is required when no creator profile is given")
         amount = min(creator.rate_card.min_base_usdc, promotion.budget.max_per_creator_usdc)
 
     return AgreementTerms(

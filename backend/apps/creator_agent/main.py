@@ -43,7 +43,10 @@ def create_app(
 
     @app.get("/a2a/v1/.well-known/agent-card.json")
     def agent_card() -> dict[str, object]:
-        return build_creator_agent_card(base_url=settings.creator_agent_base_url)
+        card = build_creator_agent_card(base_url=settings.creator_agent_base_url)
+        if settings.creator_agent_tenants:
+            card["hostedTenants"] = list(settings.creator_agent_tenants)
+        return card
 
     @app.post("/a2a/v1/message:send")
     def message_send(
@@ -150,11 +153,14 @@ def _validate_service_auth(*, settings: Settings, authorization: str | None) -> 
 
 
 def _build_task_store(settings: Settings) -> InMemoryA2ATaskStore:
-    repository = build_repository(settings) if settings.repository_backend == "firestore" else None
+    # Memory (seeded) or Firestore: every creator in the repository is a tenant here.
+    # Demo contexts stay as a fallback for tenants the repository does not know.
+    repository = build_repository(settings)
     return InMemoryA2ATaskStore(
         demo_creator_contexts(),
-        context_resolver=(
-            _firestore_context_resolver(repository) if repository is not None else None
+        context_resolver=_firestore_context_resolver(repository),
+        allowed_tenants=(
+            set(settings.creator_agent_tenants) if settings.creator_agent_tenants else None
         ),
         rationale_provider=lambda context, payload, decision: creator_rationale(
             settings=settings,

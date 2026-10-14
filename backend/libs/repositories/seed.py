@@ -68,6 +68,7 @@ def seed_demo_repository(
     *,
     fixtures_dir: Path | None = None,
     include_business_flow: bool = False,
+    creator_agent_base_url: str | None = None,
 ) -> None:
     fixture_root = fixtures_dir or backend_root() / "fixtures"
 
@@ -117,6 +118,7 @@ def seed_demo_repository(
             creator_agent_registry_entry(
                 discovery_agent,
                 updated_at=_require_str(discovery_agent, "updatedAt"),
+                base_url=creator_agent_base_url,
             ),
         )
 

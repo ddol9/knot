@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KNOT Campaign Live</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #6b7280; --line: #e5e7eb;
+    --brand: #2563eb; --brand-soft: #dbeafe; --creator: #059669; --creator-soft: #d1fae5;
+    --warn: #b45309; --warn-soft: #fef3c7; --bad: #b91c1c; --bad-soft: #fee2e2;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --panel: #171a21; --ink: #e8eaf0; --muted: #9aa3b2; --line: #272b35;
+      --brand: #60a5fa; --brand-soft: #1e3a8a; --creator: #34d399; --creator-soft: #064e3b;
+      --warn: #fbbf24; --warn-soft: #432f06; --bad: #f87171; --bad-soft: #4c1414;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --panel: #171a21; --ink: #e8eaf0; --muted: #9aa3b2; --line: #272b35;
+    --brand: #60a5fa; --brand-soft: #1e3a8a; --creator: #34d399; --creator-soft: #064e3b;
+    --warn: #fbbf24; --warn-soft: #432f06; --bad: #f87171; --bad-soft: #4c1414;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .top { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .top { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, select { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { margin-top: 14px; width: 100%; padding: 10px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+  .pill.ok { background: var(--creator-soft); color: var(--creator); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.info { background: var(--brand-soft); color: var(--brand); }
+  .ledger { display: flex; gap: 12px; margin-top: 10px; font-size: 13px; }
+  .ledger div { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .ledger b { display: block; font-size: 16px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 16px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-height: 160px; display: flex; flex-direction: column; }
+  .col .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .col .head .name { font-weight: 600; }
+  .col .head .st { font-size: 12px; color: var(--muted); }
+  .col.typing .head .st::after { content: " ●"; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .chat { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .msg { max-width: 88%; padding: 8px 10px; border-radius: 12px; animation: pop .2s ease-out; }
+  @keyframes pop { from { transform: translateY(6px); opacity: 0; } }
+  .msg.brand { align-self: flex-start; background: var(--brand-soft); border-bottom-left-radius: 4px; }
+  .msg.creator { align-self: flex-end; background: var(--creator-soft); border-bottom-right-radius: 4px; }
+  .msg .meta { font-size: 11px; color: var(--muted); }
+  .msg .amt { font-weight: 700; font-size: 15px; }
+  .msg .amt .tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
+  .brand .tag { background: var(--brand); color: #fff; } .creator .tag { background: var(--creator); color: #fff; }
+  .msg .txt { margin-top: 2px; font-size: 13px; }
+  .col .final { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-weight: 600; font-size: 13px; }
+  .final.AGREED { background: var(--creator-soft); color: var(--creator); }
+  .final.CANCELED, .final.WALKED_AWAY, .final.ROUND_LIMIT, .final.ESCALATED, .final.SKIPPED { background: var(--warn-soft); color: var(--warn); }
+  .final.REJECTED, .final.ERROR { background: var(--bad-soft); color: var(--bad); }
+  .result { margin-top: 16px; padding: 12px 14px; border-radius: 10px; font-weight: 600; }
+  .result.TARGET_REACHED { background: var(--creator-soft); color: var(--creator); }
+  .result.PARTIAL { background: var(--warn-soft); color: var(--warn); }
+  .result.NO_AGREEMENT, .result.NO_CANDIDATES, .result.ERROR { background: var(--bad-soft); color: var(--bad); }
+  .result small { display: block; font-weight: 400; font-family: var(--mono); font-size: 11px; margin-top: 4px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>KNOT Campaign Live — 탐색 → 다중 A2A 협상</h1>
+  <p class="sub">브랜드 에이전트가 공개 프로필을 쿼리해 후보를 고르고, 각 크리에이터 에이전트의 엔드포인트로 동시에 협상합니다. 예산은 장부로 예약·확정됩니다.</p>
+
+  <div class="top">
+    <form class="panel" id="f">
+      <label>카테고리</label>
+      <select name="category">
+        <option value="beauty">beauty</option><option value="fitness">fitness</option>
+        <option value="fashion">fashion</option><option value="food">food</option>
+        <option value="lifestyle">lifestyle</option>
+      </select>
+      <div class="row">
+        <div><label>총예산 (USDC)</label><input name="totalUsdc" type="number" value="1300" min="0"></div>
+        <div><label>크리에이터당 상한</label><input name="maxPerCreatorUsdc" type="number" value="700" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label>목표 인원</label><input name="targetCreatorCount" type="number" value="2" min="1"></div>
+        <div><label>후보 수 (탐색 상위)</label><input name="maxCandidates" type="number" value="5" min="1" max="20"></div>
+      </div>
+      <div class="row">
+        <div><label>첫 제안</label><input name="openingAmountUsdc" type="number" value="400" min="0"></div>
+        <div><label>비공개 상한</label><input name="ceilingUsdc" type="number" value="700" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label>양보 비율 %</label><input name="concessionPct" type="number" value="50" min="1" max="100"></div>
+        <div><label>동시 협상 수</label><input name="parallelism" type="number" value="3" min="1" max="10"></div>
+      </div>
+      <button id="go" type="submit">🚀 캠페인 시작</button>
+      <div class="hint">탐색 → 상위 후보 agent card 확인 → 예산 예약 → 병렬 협상 → 목표 도달 시 나머지 취소</div>
+    </form>
+
+    <div class="panel">
+      <h2>탐색 결과 <span id="dmeta" class="mono"></span></h2>
+      <table><thead><tr><th>#</th><th>에이전트</th><th>카테고리</th><th>공개 금액대</th><th>점수</th><th>엔드포인트</th><th>상태</th></tr></thead>
+      <tbody id="dtable"><tr><td colspan="7" class="empty">시작하면 여기에 후보와 탈락 사유가 표시됩니다.</td></tr></tbody></table>
+      <div class="ledger">
+        <div>총예산<b id="l-total">–</b></div>
+        <div>예약 중<b id="l-res">–</b></div>
+        <div>확정<b id="l-com">–</b></div>
+        <div>가용<b id="l-avail">–</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols" id="cols"></div>
+  <div id="result"></div>
+</div>
+
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const go = $('#go'), cols = $('#cols'), res = $('#result'), dtable = $('#dtable'), dmeta = $('#dmeta');
+  let es = null; const colByAgent = {};
+
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  function ledger(l) {
+    if (!l) return;
+    $('#l-total').textContent = l.totalUsdc; $('#l-res').textContent = l.reservedUsdc;
+    $('#l-com').textContent = l.committedUsdc; $('#l-avail').textContent = l.availableUsdc;
+  }
+  function renderDiscovery(r) {
+    dmeta.textContent = `queried ${r.queried} · ranked ${r.ranked} · probed ${r.probed}`;
+    dtable.innerHTML = r.candidates.map((c) => {
+      let st;
+      if (c.selected) st = '<span class="pill ok">선정 · card UP</span>';
+      else if (!c.eligible) st = `<span class="pill bad">${esc(c.hardFilterReasons.join(', '))}</span>`;
+      else if (c.cardStatus === 'DOWN') st = `<span class="pill bad">card DOWN</span> <span class="mono">${esc(c.cardError || '')}</span>`;
+      else if (c.cardStatus === 'NO_SKILL') st = '<span class="pill bad">협상 스킬 없음</span>';
+      else st = '<span class="pill warn">후보 수 초과로 미선정</span>';
+      return `<tr><td>${c.rank ?? '–'}</td><td><b>${esc(c.displayName)}</b><br><span class="mono">${esc(c.creatorAgentId)}</span></td>
+        <td>${esc((c.categories || []).join(', '))}</td><td class="mono">${esc(c.publicRateBand || '')}</td>
+        <td class="mono">${c.score ? c.score.toFixed(3) : '–'}</td><td class="mono">${esc(c.baseUrl)}</td><td>${st}</td></tr>`;
+    }).join('');
+  }
+  function column(agentId, name) {
+    if (colByAgent[agentId]) return colByAgent[agentId];
+    const d = document.createElement('div'); d.className = 'col';
+    d.innerHTML = `<div class="head"><div><div class="name">🎨 ${esc(name || agentId)}</div><div class="mono">${esc(agentId)}</div></div><div class="st">대기</div></div><div class="chat"></div>`;
+    cols.appendChild(d); colByAgent[agentId] = d; return d;
+  }
+  function status(col, text, typing) { col.querySelector('.st').textContent = text; col.classList.toggle('typing', !!typing); }
+  function bubble(col, t) {
+    const d = document.createElement('div'); d.className = 'msg ' + t.role;
+    d.innerHTML = `<div class="meta">round ${t.round} · ${t.role === 'brand' ? '💼 Brand' : '🎨 Creator'}</div>
+      <div class="amt">${t.amountUsdc} USDC<span class="tag">${t.type}</span></div><div class="txt"></div>`;
+    d.querySelector('.txt').textContent = t.message;
+    col.querySelector('.chat').appendChild(d);
+  }
+  function finalBox(col, kind, text) {
+    const d = document.createElement('div'); d.className = 'final ' + kind; d.textContent = text; col.appendChild(d);
+    status(col, '종료', false);
+  }
+  function finish(kind, text, extra) {
+    res.innerHTML = `<div class="result ${kind}">${text}${extra ? '<small>' + extra + '</small>' : ''}</div>`;
+    go.disabled = false; if (es) { es.close(); es = null; }
+  }
+
+  $('#f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (es) es.close();
+    cols.innerHTML = ''; res.innerHTML = ''; for (const k in colByAgent) delete colByAgent[k];
+    dtable.innerHTML = '<tr><td colspan="7" class="empty">탐색 중…</td></tr>'; dmeta.textContent = '';
+    const fd = new FormData(e.target), q = new URLSearchParams();
+    for (const [k, v] of fd.entries()) if (String(v).trim() !== '') q.set(k, v);
+    go.disabled = true;
+
+    es = new EventSource('/brand/v1/campaigns/stream?' + q.toString());
+    es.addEventListener('discovery', (ev) => {
+      const r = JSON.parse(ev.data).report; renderDiscovery(r);
+      r.candidates.filter((c) => c.selected).forEach((c) => column(c.creatorAgentId, c.displayName));
+    });
+    es.addEventListener('negotiation_started', (ev) => {
+      const d = JSON.parse(ev.data); ledger(d.ledger);
+      status(column(d.creatorAgentId), `예약 ${d.reservedUsdc} USDC · 첫 제안 작성 중`, true);
+    });
+    es.addEventListener('negotiation_skipped', (ev) => {
+      const d = JSON.parse(ev.data); ledger(d.ledger);
+      finalBox(column(d.creatorAgentId), 'SKIPPED', d.reason === 'TARGET_REACHED' ? '⏹ 목표 인원 도달로 시작 안 함' : '💸 예산 소진으로 시작 안 함');
+    });
+    es.addEventListener('negotiation_error', (ev) => {
+      const d = JSON.parse(ev.data); finalBox(column(d.creatorAgentId), 'ERROR', '⚠️ ' + d.detail);
+    });
+    es.addEventListener('turn', (ev) => {
+      const t = JSON.parse(ev.data); const col = column(t.creatorAgentId); bubble(col, t);
+      if (t.role === 'brand') status(col, `${t.type} 전송 · 크리에이터 평가 중`, true);
+      else status(col, t.type === 'COUNTER' ? 'COUNTER 받음 · 브랜드 검토 중' : `${t.type} 응답`, t.type === 'COUNTER');
+    });
+    es.addEventListener('negotiation_result', (ev) => {
+      const d = JSON.parse(ev.data); ledger(d.ledger); const r = d.result;
+      const label = { AGREED: `🤝 합의 ${r.finalAmountUsdc} USDC`, REJECTED: '🚫 거절', WALKED_AWAY: '🚪 상한 초과로 철수',
+                      ROUND_LIMIT: '⏱ 라운드 초과', ESCALATED: '🙋 사람 검토 필요', CANCELED: '⏹ 목표 도달로 취소' }[r.outcome] || r.outcome;
+      finalBox(column(d.creatorAgentId), r.outcome, label);
+    });
+    es.addEventListener('campaign_result', (ev) => {
+      const r = JSON.parse(ev.data).result;
+      const label = { TARGET_REACHED: '🎯 목표 달성', PARTIAL: '🟡 일부 합의', NO_AGREEMENT: '❌ 합의 없음', NO_CANDIDATES: '❌ 후보 없음' }[r.outcome] || r.outcome;
+      finish(r.outcome, `${label} · ${r.agreedCount}/${r.targetCreatorCount}명 · 확정 ${r.committedUsdc}/${r.totalBudgetUsdc} USDC`,
+             `campaignId ${r.campaignId}<br>matchRunId ${r.matchRunId}`);
+    });
+    es.addEventListener('error', (ev) => {
+      let detail = '연결이 끊겼습니다 (브랜드 에이전트가 떠 있는지 확인).';
+      try { if (ev.data) detail = JSON.parse(ev.data).detail; } catch (_) {}
+      if (es) finish('ERROR', '⚠️ ' + detail);
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -35,6 +35,11 @@ class Settings(BaseModel):
     schema_version: str = "v1"
     creator_agent_base_url: str = "http://localhost:8081/a2a/v1"
     creator_a2a_mode: str = "local"
+    brand_agent_base_url: str = "http://localhost:8083/brand/v1"
+    # Creator agent process hosts only these tenants (None = every tenant in the repository).
+    creator_agent_tenants: list[str] | None = None
+    # Brand side: tenant -> A2A base URL overrides (registry baseUrl wins when present).
+    creator_agent_endpoints: dict[str, str] = {}
     creator_a2a_timeout_seconds: int = 30
     a2a_service_token: str | None = None
     web3_gateway_base_url: str = "http://localhost:8082"
@@ -101,6 +106,9 @@ def get_settings(service_name: str | None = None) -> Settings:
             "CREATOR_AGENT_BASE_URL", "http://localhost:8081/a2a/v1"
         ),
         creator_a2a_mode=os.getenv("KNOT_CREATOR_A2A_MODE", "local"),
+        brand_agent_base_url=os.getenv("BRAND_AGENT_BASE_URL", "http://localhost:8083/brand/v1"),
+        creator_agent_tenants=_csv_list(os.getenv("KNOT_CREATOR_AGENT_TENANTS")),
+        creator_agent_endpoints=_csv_map(os.getenv("KNOT_CREATOR_AGENT_ENDPOINTS")),
         creator_a2a_timeout_seconds=int(os.getenv("CREATOR_A2A_TIMEOUT_SECONDS", "30")),
         a2a_service_token=os.getenv("KNOT_A2A_SERVICE_TOKEN"),
         web3_gateway_base_url=os.getenv("WEB3_GATEWAY_BASE_URL", "http://localhost:8082"),
@@ -190,3 +198,21 @@ def _csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _csv_list(value: str | None) -> list[str] | None:
+    if not value or not value.strip():
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _csv_map(value: str | None) -> dict[str, str]:
+    """`tenant=url,tenant2=url2` -> dict."""
+    result: dict[str, str] = {}
+    for item in (value or "").split(","):
+        if "=" not in item:
+            continue
+        key, url = item.split("=", 1)
+        if key.strip() and url.strip():
+            result[key.strip()] = url.strip()
+    return result

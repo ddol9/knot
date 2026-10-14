@@ -277,3 +277,87 @@ A2A payloads are projected into user-friendly timeline items. The frontend recei
 - technical IDs only where authorized.
 
 It never receives raw private snapshots and hides them with CSS; they remain absent from the DTO.
+
+---
+
+## 부록: Brand Agent 프로세스 (2026-10-13 추가)
+
+제품 API 안에 인라인으로 있던 브랜드 쪽 협상 루프를 **독립 에이전트 프로세스**로 분리했다.
+두 에이전트가 실제 HTTP A2A로 주고받는 걸 프론트/제품 API 없이 확인할 수 있다.
+
+| 역할 | 코드 | 포트 |
+|---|---|---|
+| Creator Agent (A2A 서버) | `backend/apps/creator_agent/main.py` | 8081 |
+| Brand Agent (A2A 클라이언트 + 자체 HTTP API) | `backend/apps/brand_agent/main.py` | 8083 |
+| 협상 루프 (전송 무관) | `backend/libs/agents/brand_negotiator.py` | – |
+| 터미널 관전 CLI | `backend/scripts/a2a_negotiate.py` | – |
+
+### 브랜드 전략 (`BrandNegotiationStrategy`)
+- `openingAmountUsdc` 첫 제안, `ceilingUsdc` **비공개 상한**(크리에이터에게 절대 노출 안 됨), `concessionPct` 라운드마다 갭을 좁히는 비율, `maxRounds`(기본 `promotion.autonomy.maxNegotiationRounds`).
+- 크리에이터 COUNTER 금액이 상한 이내 + 브랜드 정책 통과 → ACCEPT 전송 → 크리에이터가 자기 조건이므로 ACCEPT → `AGREED` + term-sheet artifact.
+- 상한 초과 → 갭의 `concessionPct`%만큼 올려 COUNTER. 더 못 올리면 `tasks/{id}:cancel` 호출 후 `WALKED_AWAY`. 라운드 초과 시 `ROUND_LIMIT`.
+- 금액·행동·정책은 결정적 코드가 정하고, Vertex Gemini는 말풍선 문장만 생성(`brand_message_display`).
+
+### 실행
+```bash
+cd backend
+KNOT_SERVICE_NAME=knot-creator-agent uvicorn apps.creator_agent.main:app --port 8081
+KNOT_SERVICE_NAME=knot-brand-agent   uvicorn apps.brand_agent.main:app   --port 8083
+python scripts/a2a_negotiate.py --open 500 --ceiling 700     # 500 → 650 COUNTER → ACCEPT
+python scripts/a2a_negotiate.py --open 400 --ceiling 600     # 상한 미달 → WALKED_AWAY (task CANCELED)
+python scripts/a2a_negotiate.py --category gambling          # 차단 업종 → REJECT
+python scripts/a2a_negotiate.py --direct --creator-min 800   # 브랜드 서버 없이 이 프로세스가 브랜드
+```
+`scripts/local/dev_stack.sh`도 brand-agent(8083)를 같이 띄운다.
+⚠️ 로컬에 Docker 컨테이너가 `*:8081`을 IPv6로 잡고 있으면 `localhost:8081`이 그쪽으로 간다. 그럴 땐 `127.0.0.1` 또는 다른 포트 + `CREATOR_AGENT_BASE_URL`로 지정.
+
+### 한 화면에서 실시간 관전
+- `GET /brand/v1/negotiations/stream?openingAmountUsdc=500&ceilingUsdc=700&...` — SSE. `status` → `turn`(메시지마다) → `result` 또는 `error`.
+- `GET /brand/v1/watch` — 브랜드 에이전트가 서빙하는 관전 페이지. 브라우저에서 http://127.0.0.1:8083/brand/v1/watch 열고 조건 넣고 시작하면 양쪽 말풍선이 턴마다 실시간으로 붙는다.
+- CLI(`scripts/a2a_negotiate.py`)도 같은 스트림을 읽어 턴 단위로 출력한다.
+
+### 주의
+- `creatorPolicy`를 요청에 넣으면 embedded context로 크리에이터 에이전트의 테넌트 정책을 **덮어쓴다**(프로세스 재시작 전까지 유지). 데모 시나리오 전환용이지 실제 운영 경로는 아니다.
+
+
+---
+
+## 부록 2: 탐색 → 다중 협상 캠페인 (2026-10-14 추가)
+
+브랜드 에이전트가 **여러 크리에이터 에이전트**를 탐색하고 동시에 협상한다. 에이전트는 서로 다른 프로세스/호스트에 있어도 된다.
+
+| 역할 | 코드 |
+|---|---|
+| 탐색 깔때기 | `backend/libs/agents/brand_discovery.py` |
+| 예산 장부 + 팬아웃 | `backend/libs/agents/brand_campaign.py` |
+| 캠페인 API / SSE / 페이지 | `apps/brand_agent/main.py` → `POST /brand/v1/campaigns`, `GET /brand/v1/campaigns/stream`, `GET /brand/v1/campaign` |
+| 크리에이터 프로세스별 테넌트 제한 | `KNOT_CREATOR_AGENT_TENANTS` (agent card에 `hostedTenants` 노출) |
+| 테넌트별 엔드포인트 | 레지스트리 `baseUrl` > `KNOT_CREATOR_AGENT_ENDPOINTS` 오버라이드 > `CREATOR_AGENT_BASE_URL` |
+
+### 데이터
+```
+agents/{id}/policy                 비공개 정책 — 크리에이터 에이전트 프로세스만 읽음
+agents/{id}/registry               baseUrl, tenant, skillIds, publicationStatus
+creatorDiscoveryProfiles/{id}      공개 프로젝션 — 브랜드가 쿼리 (publicRateBand 구간만, 정확 최소금액 없음)
+matchRuns/{runId}                  캠페인 1회: status, 장부 스냅샷
+matchRuns/{runId}/candidates/{id}  후보별 점수·탈락 사유·taskId·outcome
+```
+
+### 탐색 알고리즘 (싼 것부터)
+1. `creatorDiscoveryProfiles` 인덱스 쿼리 (PUBLISHED, 카테고리 array_contains, 일정) — `discovery.py`
+2. 프로젝션 점수·하드필터 — `discovery.py`
+3. 상위 후보 전체 프로필 읽어 정밀 하드필터·점수 — `matching.py` (`RATE_EXCEEDS_MAX_PER_CREATOR`, `USAGE_RIGHTS_UNSUPPORTED` 등은 여기서)
+4. 상위 K명 agent card 병렬 프로브 — 죽었거나 `promotion-negotiation` 스킬 없으면 제외
+
+### 팬아웃 + 예산
+- 후보마다 `BrandNegotiator` 스레드. 시작 전에 **1인 상한만큼 총예산에서 예약**(FIFO, 순위 순). 합의 시 실제 금액으로 확정하고 차액 반환, 실패 시 전액 반환.
+- 목표 인원 도달 → 진행 중 협상은 다음 전송 전에 cancel(`CANCELED`), 대기 중은 `TARGET_REACHED`로 미시작.
+- 정책 엔진도 `validate_brand_terms(cumulative_committed_usdc=…)`로 누적 초과를 독립 차단.
+- 캠페인 경로는 `creatorNegotiationContext` 메타데이터를 보내지 않는다. 각 크리에이터 에이전트가 자기 정책을 저장소에서 읽는다.
+
+### 실행
+```bash
+scripts/local/a2a_multi_agent.sh                      # 크리에이터 2 프로세스 + 브랜드
+cd backend && python scripts/a2a_campaign.py --category beauty --total 1300 --target 2
+# 브라우저: http://127.0.0.1:8083/brand/v1/campaign
+```
