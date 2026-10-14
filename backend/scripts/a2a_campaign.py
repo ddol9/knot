@@ -137,6 +137,23 @@ def main() -> int:
                         f"{DIM}장부: 확정 {led['committedUsdc']} / "
                         f"가용 {led['availableUsdc']}{RESET}"
                     )
+                elif event == "agreement_created":
+                    print(
+                        f"  {BOLD}📄 [{agent}] 합의서{RESET} {data['agreementId']}  "
+                        f"{data['amountUsdc']} USDC · {data['deliverableSummary']}  "
+                        f"{DIM}termsHash {str(data['termsHash'])[:16]}…{RESET}"
+                    )
+                elif event == "escrow_locked":
+                    print(
+                        f"  {CREATOR}🔒 [{agent}] 에스크로 잠금{RESET} {data.get('escrowId')}  "
+                        f"{DIM}{data.get('signature') or ''}{RESET}"
+                    )
+                elif event in ("escrow_skipped", "escrow_failed"):
+                    color = YEL if event == "escrow_skipped" else RED
+                    print(
+                        f"  {color}🔓 [{agent}] 에스크로 {data.get('status')}{RESET} "
+                        f"{data.get('reason')} {DIM}{data.get('detail') or ''}{RESET}"
+                    )
                 elif event == "campaign_result":
                     final = data["result"]
                 elif event == "error":
@@ -157,9 +174,14 @@ def main() -> int:
     )
     for n in final["negotiations"]:
         r = n.get("result") or {}
+        escrow = n.get("escrow") or {}
+        tail = ""
+        if n.get("agreementId"):
+            tail = f"  agreement {n['agreementId']}  escrow {escrow.get('status')}"
         print(
             f"  {n['creatorAgentId']:<18} {n['status']:<8} "
-            f"{r.get('outcome') or n.get('skipReason') or '':<16} {n['committedUsdc']:>4} USDC"
+            f"{r.get('outcome') or n.get('skipReason') or '':<16} "
+            f"{n['committedUsdc']:>4} USDC{tail}"
         )
     print(f"matchRunId: {final['matchRunId']}")
     print(f"{BOLD}{'─' * 60}{RESET}")

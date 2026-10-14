@@ -1,17 +1,14 @@
-from collections.abc import Callable
-from datetime import date
-
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from apps.api.repository_factory import build_repository
 from libs.a2a.agent_card import build_creator_agent_card
 from libs.a2a.models import A2A_VERSION, A2ASendRequest
 from libs.a2a.store import A2ATaskError, InMemoryA2ATaskStore
+from libs.agents.creator_context import repository_context_resolver
 from libs.agents.demo_context import demo_creator_contexts
 from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import creator_rationale
 from libs.observability.middleware import add_request_context
-from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
 
 
@@ -158,7 +155,7 @@ def _build_task_store(settings: Settings) -> InMemoryA2ATaskStore:
     repository = build_repository(settings)
     return InMemoryA2ATaskStore(
         demo_creator_contexts(),
-        context_resolver=_firestore_context_resolver(repository),
+        context_resolver=repository_context_resolver(repository),
         allowed_tenants=(
             set(settings.creator_agent_tenants) if settings.creator_agent_tenants else None
         ),
@@ -169,26 +166,6 @@ def _build_task_store(settings: Settings) -> InMemoryA2ATaskStore:
             decision=decision,
         ),
     )
-
-
-def _firestore_context_resolver(
-    repository: KnotRepository,
-) -> Callable[[str], CreatorNegotiationContext | None]:
-    def resolve(tenant: str) -> CreatorNegotiationContext | None:
-        creator = repository.get_creator_profile_by_agent_id(tenant)
-        if creator is None or not creator.active:
-            return None
-        policy = repository.get_agent_policy(tenant)
-        if policy is None or not policy.active:
-            return None
-        return CreatorNegotiationContext(
-            creatorAgentId=tenant,
-            policy=policy.creator,
-            today=date.today(),
-            currentMonthDeliverables=creator.active_deliverables_this_month,
-        )
-
-    return resolve
 
 
 app = create_app()

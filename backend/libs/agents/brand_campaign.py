@@ -23,6 +23,12 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from libs.a2a.client import CreatorA2AClient, CreatorA2AClientError
+from libs.agents.agreements import (
+    AgreementTermsMismatch,
+    build_agreement_document,
+    build_negotiation_document,
+    write_agreement_milestones,
+)
 from libs.agents.brand_discovery import DiscoveryReport, discover_creator_agents
 from libs.agents.brand_negotiator import (
     A2ATransport,
@@ -32,12 +38,15 @@ from libs.agents.brand_negotiator import (
     DisplayProvider,
     NegotiationTurn,
 )
-from libs.domain.models import Promotion
+from libs.domain.models import CreatorProfile, Promotion
 from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
 
 CampaignOutcome = Literal["TARGET_REACHED", "PARTIAL", "NO_AGREEMENT", "NO_CANDIDATES"]
 TransportFactory = Callable[[str], A2ATransport]  # base_url -> transport
+# agreement document -> escrow summary
+#   {"status": "LOCKED" | "SKIPPED" | "FAILED", "reason"?, "escrowId"?, "signature"?}
+SettlementHook = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class CampaignStrategy(BaseModel):
@@ -72,6 +81,10 @@ class CandidateNegotiation(BaseModel):
     reserved_usdc: int = Field(default=0, alias="reservedUsdc")
     committed_usdc: int = Field(default=0, alias="committedUsdc")
     result: BrandNegotiationResult | None = None
+    negotiation_id: str | None = Field(default=None, alias="negotiationId")
+    agreement_id: str | None = Field(default=None, alias="agreementId")
+    terms_hash: str | None = Field(default=None, alias="termsHash")
+    escrow: dict[str, Any] | None = None
 
 
 class CampaignResult(BaseModel):
@@ -85,6 +98,7 @@ class CampaignResult(BaseModel):
     agreed_count: int = Field(alias="agreedCount")
     total_budget_usdc: int = Field(alias="totalBudgetUsdc")
     committed_usdc: int = Field(alias="committedUsdc")
+    agreement_ids: list[str] = Field(default_factory=list, alias="agreementIds")
     discovery: DiscoveryReport
     negotiations: list[CandidateNegotiation]
 
@@ -188,9 +202,17 @@ class CampaignRunner:
         display_provider: DisplayProvider | None = None,
         on_event: Callable[[CampaignEvent], None] | None = None,
         probe_cards: bool = True,
+        brand: dict[str, Any] | None = None,
+        promotion_document: dict[str, Any] | None = None,
+        settlement_hook: SettlementHook | None = None,
     ) -> None:
         self._repository = repository
         self._promotion = promotion
+        self._brand = brand
+        self._promotion_document = promotion_document or promotion.model_dump(
+            by_alias=True, mode="json"
+        )
+        self._settlement_hook = settlement_hook
         self._strategy = strategy
         self._transport_factory = transport_factory
         self._default_base_url = default_base_url
@@ -204,6 +226,7 @@ class CampaignRunner:
         self._agreed_lock = threading.Lock()
         self._stop = threading.Event()
         self._creator_id_by_agent: dict[str, str] = {}
+        self._agreement_ids: list[str] = []
 
     @property
     def campaign_id(self) -> str:
@@ -290,14 +313,24 @@ class CampaignRunner:
 
             negotiation.result = result
             negotiation.status = "DONE"
+            agreement: dict[str, Any] | None = None
             if result.outcome == "AGREED":
-                ledger.commit(agent_id, result.final_amount_usdc)
-                negotiation.committed_usdc = result.final_amount_usdc
-                with self._agreed_lock:
-                    self._agreed += 1
-                    if self._agreed >= strategy.target_creator_count:
-                        self._stop.set()
-                        ledger.wake_all()
+                try:
+                    agreement = self._record_agreement(negotiation, result, profiles.get(agent_id))
+                except AgreementTermsMismatch as exc:
+                    # Not a shared, provable term sheet: never count it, give the budget back.
+                    ledger.release(agent_id)
+                    negotiation.skip_reason = "TERMS_HASH_MISMATCH"
+                    self._emit("negotiation_error", agent_id, {"detail": str(exc)})
+                else:
+                    ledger.commit(agent_id, result.final_amount_usdc)
+                    negotiation.committed_usdc = result.final_amount_usdc
+                    with self._agreed_lock:
+                        self._agreed += 1
+                        self._agreement_ids.append(str(agreement["agreementId"]))
+                        if self._agreed >= strategy.target_creator_count:
+                            self._stop.set()
+                            ledger.wake_all()
             else:
                 ledger.release(agent_id)
             self._emit(
@@ -309,6 +342,21 @@ class CampaignRunner:
                 },
             )
             self._persist_candidate(negotiation)
+            if agreement is not None:
+                self._emit(
+                    "agreement_created",
+                    agent_id,
+                    {
+                        "agreementId": agreement["agreementId"],
+                        "negotiationId": agreement["negotiationId"],
+                        "termsHash": agreement["termsHash"],
+                        "amountUsdc": agreement["currentAmountUsdc"],
+                        "deliverableSummary": agreement["deliverableSummary"],
+                        "status": agreement["status"],
+                    },
+                )
+                self._settle(negotiation, agreement)
+                self._persist_candidate(negotiation)
 
         with ThreadPoolExecutor(max_workers=strategy.parallelism) as pool:
             list(pool.map(work, [by_id[n.creator_agent_id] for n in negotiations]))
@@ -329,6 +377,82 @@ class CampaignRunner:
         if card is None:
             return {"skills": [{"id": "promotion-negotiation"}]}
         return card()
+
+    def _record_agreement(
+        self,
+        negotiation: CandidateNegotiation,
+        result: BrandNegotiationResult,
+        creator: CreatorProfile | None,
+    ) -> dict[str, Any]:
+        """Persist negotiations/{id}, agreements/{id} (+milestones) and link the candidate."""
+        if result.agreement_id is None or result.terms_hash is None or result.terms is None:
+            raise AgreementTermsMismatch("creator task completed without a knot.term-sheet.v1")
+        agent_id = negotiation.creator_agent_id
+        creator_id = self._creator_id_by_agent.get(agent_id, agent_id)
+        negotiation_id = f"negotiation-{uuid4()}"
+        now = _now()
+        strategy = self._strategy
+        negotiation_document = build_negotiation_document(
+            negotiation_id=negotiation_id,
+            match_run_id=self._match_run_id,
+            match_candidate_id=creator_id,
+            promotion=self._promotion,
+            promotion_document=self._promotion_document,
+            brand=self._brand,
+            creator=creator,
+            creator_agent_id=agent_id,
+            context_id=result.context_id,
+            task_id=result.task_id,
+            status="AGREED",
+            rounds=result.rounds,
+            initial_amount_usdc=min(strategy.opening_amount_usdc, negotiation.reserved_usdc),
+            current_terms=result.terms.model_dump(by_alias=True, mode="json"),
+            # The private ceiling stays out of every persisted document.
+            brand_policy_snapshot={
+                "ruleVersion": "brand-campaign.v1",
+                "campaignId": self._campaign_id,
+                "concessionPct": strategy.concession_pct,
+                "maxRounds": strategy.max_rounds,
+            },
+            created_at=now,
+        )
+        agreement = build_agreement_document(
+            negotiation=negotiation_document,
+            agreement_id=result.agreement_id,
+            artifact_terms_hash=result.terms_hash,
+            terms=result.terms,
+            artifact_id=None,
+            task_id=result.task_id,
+            promotion_document=self._promotion_document,
+            brand=self._brand,
+            creator=creator,
+            created_at=now,
+        )
+        self._repository.save_raw_document(
+            FirestorePaths.negotiation(negotiation_id), negotiation_document
+        )
+        self._repository.save_raw_document(FirestorePaths.agreement(result.agreement_id), agreement)
+        write_agreement_milestones(self._repository, agreement)
+        negotiation.negotiation_id = negotiation_id
+        negotiation.agreement_id = result.agreement_id
+        negotiation.terms_hash = str(agreement["termsHash"])
+        return agreement
+
+    def _settle(self, negotiation: CandidateNegotiation, agreement: dict[str, Any]) -> None:
+        agent_id = negotiation.creator_agent_id
+        if self._settlement_hook is None:
+            escrow: dict[str, Any] = {"status": "SKIPPED", "reason": "NO_SETTLEMENT_HOOK"}
+        else:
+            try:
+                escrow = dict(self._settlement_hook(agreement))
+            except Exception as exc:  # the hook crosses into payment code; never kill the campaign
+                escrow = {"status": "FAILED", "reason": type(exc).__name__, "detail": str(exc)}
+        negotiation.escrow = escrow
+        status = str(escrow.get("status"))
+        event = {"LOCKED": "escrow_locked", "SKIPPED": "escrow_skipped"}.get(
+            status, "escrow_failed"
+        )
+        self._emit(event, agent_id, {"agreementId": agreement["agreementId"], **escrow})
 
     def _on_turn(self, agent_id: str, turn: NegotiationTurn) -> None:
         self._emit("turn", agent_id, turn.model_dump(by_alias=True, mode="json"))
@@ -354,9 +478,11 @@ class CampaignRunner:
             agreedCount=self._agreed,
             totalBudgetUsdc=ledger.total_usdc,
             committedUsdc=ledger.committed_usdc,
+            agreementIds=list(self._agreement_ids),
             discovery=report,
             negotiations=negotiations,
         )
+        first_agreed = next((n for n in negotiations if n.agreement_id), None)
         self._emit(
             "campaign_result", data={"result": result.model_dump(by_alias=True, mode="json")}
         )
@@ -366,8 +492,18 @@ class CampaignRunner:
                 "matchRunId": self._match_run_id,
                 "campaignId": self._campaign_id,
                 "promotionId": self._promotion.promotion_id,
-                "status": outcome,
+                # docs/07 vocabulary for the product; the campaign outcome sits beside it.
+                "status": "AGREED" if self._agreed > 0 else "EXHAUSTED",
+                "campaignOutcome": outcome,
                 "agreedCount": self._agreed,
+                "targetCreatorCount": self._strategy.target_creator_count,
+                "agreementIds": list(self._agreement_ids),
+                "selectedCreatorAgentId": first_agreed.creator_agent_id if first_agreed else None,
+                "selectedCreatorId": (
+                    self._creator_id_by_agent.get(first_agreed.creator_agent_id)
+                    if first_agreed
+                    else None
+                ),
                 "ledger": ledger.snapshot(),
                 "updatedAt": _now(),
             },
@@ -403,6 +539,9 @@ class CampaignRunner:
         if negotiation.result is not None:
             document["taskId"] = negotiation.result.task_id
             document["outcome"] = negotiation.result.outcome
+        if negotiation.negotiation_id is not None:
+            document["negotiationPath"] = FirestorePaths.negotiation(negotiation.negotiation_id)
+            document["negotiationStatus"] = "AGREED"
         self._repository.save_raw_document(
             FirestorePaths.match_candidate(self._match_run_id, creator_id),
             {**document, "updatedAt": _now()},

@@ -17,12 +17,12 @@ from fastapi.testclient import TestClient
 
 from apps.brand_agent.main import create_app as create_brand_app
 from apps.brand_agent.main import demo_promotion
-from apps.creator_agent.main import _firestore_context_resolver
 from apps.creator_agent.main import create_app as create_creator_app
 from libs.a2a.store import InMemoryA2ATaskStore
 from libs.agents.brand_campaign import BudgetLedger, CampaignRunner, CampaignStrategy
 from libs.agents.brand_discovery import discover_creator_agents
 from libs.agents.brand_negotiator import InProcessTransport
+from libs.agents.creator_context import repository_context_resolver
 from libs.agents.demo_context import demo_creator_contexts
 from libs.repositories.seed import seed_demo_repository
 from libs.repositories.store import InMemoryDocumentStore, KnotRepository
@@ -37,7 +37,7 @@ def _seeded_repository() -> KnotRepository:
 
 def _creator_store(repository: KnotRepository) -> InMemoryA2ATaskStore:
     return InMemoryA2ATaskStore(
-        demo_creator_contexts(), context_resolver=_firestore_context_resolver(repository)
+        demo_creator_contexts(), context_resolver=repository_context_resolver(repository)
     )
 
 
@@ -187,7 +187,8 @@ def test_campaign_reaches_target_within_budget_and_skips_the_rest() -> None:
         assert task.artifacts[0].parts[0].data["result"] == "AGREED"
     # Match run + candidates persisted.
     run_doc = repository.get_raw_document(f"matchRuns/{result.match_run_id}")
-    assert run_doc and run_doc["status"] == "TARGET_REACHED"
+    assert run_doc and run_doc["status"] == "AGREED"
+    assert run_doc["campaignOutcome"] == "TARGET_REACHED"
     candidates = repository.list_raw_documents(f"matchRuns/{result.match_run_id}/candidates")
     assert len(candidates) == len(result.discovery.candidates)
     assert any(c.get("outcome") == "AGREED" for c in candidates)
@@ -243,7 +244,7 @@ def test_brand_campaign_streams_across_two_creator_services() -> None:
             ),
             task_store=InMemoryA2ATaskStore(
                 {},
-                context_resolver=_firestore_context_resolver(repository),
+                context_resolver=repository_context_resolver(repository),
                 allowed_tenants=set(tenants),
             ),
         )

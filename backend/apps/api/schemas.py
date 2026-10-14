@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 from solders.pubkey import Pubkey
 
 from libs.domain.models import (
@@ -460,7 +460,9 @@ class DisputeCreateRequest(DomainModel):
 
 class DisputeResolutionRequest(DomainModel):
     resolution: str
-    resolved_in_favor_of: str = Field(alias="resolvedInFavorOf")  # "brand" or "creator" or "partial"
+    resolved_in_favor_of: str = Field(
+        alias="resolvedInFavorOf"
+    )  # "brand" or "creator" or "partial"
 
     @field_validator("resolved_in_favor_of")
     @classmethod
@@ -468,3 +470,21 @@ class DisputeResolutionRequest(DomainModel):
         if value not in ["brand", "creator", "partial"]:
             raise ValueError("resolvedInFavorOf must be 'brand', 'creator', or 'partial'")
         return value
+
+
+class PromotionCampaignRequest(DomainModel):
+    """Brand-side campaign: discover creator agents and negotiate with several at once.
+
+    Amounts default from the Promotion (initialOffer / budget.maxPerCreatorUsdc) when omitted.
+    `ceilingUsdc` is the brand's private per-creator ceiling and is never persisted or sent.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    target_creator_count: int = Field(default=1, alias="targetCreatorCount", ge=1, le=20)
+    max_candidates: int = Field(default=5, alias="maxCandidates", ge=1, le=20)
+    parallelism: int = Field(default=3, ge=1, le=10)
+    opening_amount_usdc: int | None = Field(default=None, alias="openingAmountUsdc", ge=0)
+    ceiling_usdc: int | None = Field(default=None, alias="ceilingUsdc", ge=0)
+    concession_pct: int = Field(default=50, alias="concessionPct", ge=1, le=100)
+    max_rounds: int | None = Field(default=None, alias="maxRounds", ge=1, le=5)

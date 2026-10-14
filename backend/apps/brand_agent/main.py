@@ -38,6 +38,7 @@ from libs.agents.brand_negotiator import (
     BrandNegotiator,
     NegotiationTurn,
 )
+from libs.agents.campaign_stream import campaign_event_stream
 from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import brand_message_display
 from libs.domain.models import AgreementTerms, CreatorPolicy, Promotion, UsageRights
@@ -374,34 +375,25 @@ def _campaign_runner(
         endpoint_overrides=settings.creator_agent_endpoints,
         display_provider=_display_provider(settings, promotion),
         on_event=on_event,
+        settlement_hook=_standalone_settlement,
     )
 
 
 def _stream_campaign(
     settings: Settings, repository: KnotRepository, request: CampaignRequest
 ) -> Iterator[str]:
-    events: queue.Queue[tuple[str, object]] = queue.Queue()
-
-    def on_event(event: CampaignEvent) -> None:
-        events.put((event.event, {"creatorAgentId": event.creator_agent_id, **event.data}))
-
-    runner = _campaign_runner(settings, repository, request, on_event)
-    yield _sse("status", {"campaignId": runner.campaign_id, "llmMode": settings.gemini_mode})
-
-    def worker() -> None:
-        try:
-            runner.run()
-        except Exception as exc:  # surfaced to the client as an SSE error event
-            events.put(("error", {"detail": str(exc)}))
-        finally:
-            events.put(("done", None))
-
-    threading.Thread(target=worker, daemon=True).start()
-    while True:
-        event, data = events.get()
-        if event == "done":
-            return
+    stream = campaign_event_stream(
+        lambda on_event: _campaign_runner(settings, repository, request, on_event),
+        status={"llmMode": settings.gemini_mode},
+    )
+    for event, data in stream:
         yield _sse(event, data)
+
+
+def _standalone_settlement(agreement: dict[str, object]) -> dict[str, object]:
+    # The standalone brand agent writes the agreement; escrow funding stays with the
+    # product API (`POST /api/v1/agreements/{id}/escrow:lock`) and its payment authority.
+    return {"status": "SKIPPED", "reason": "SETTLEMENT_VIA_PRODUCT_API"}
 
 
 def _display_provider(settings: Settings, promotion: Promotion):  # type: ignore[no-untyped-def]

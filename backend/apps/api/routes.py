@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import socket
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
@@ -16,6 +16,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from apps.api.schemas import (
@@ -39,6 +40,7 @@ from apps.api.schemas import (
     MilestoneReleaseConfirmRequest,
     OnboardingPatchRequest,
     ProductAnalysisRequest,
+    PromotionCampaignRequest,
     PromotionCreateRequest,
     UserBootstrapRequest,
     WalletChallengeRequest,
@@ -56,7 +58,24 @@ from libs.a2a.models import (
 )
 from libs.a2a.registry import creator_agent_registry_entry
 from libs.a2a.store import InMemoryA2ATaskStore
+from libs.agents.agreements import brand_display_name as _brand_display_name
+from libs.agents.agreements import public_brand_snapshot as _public_brand_snapshot
+from libs.agents.agreements import public_creator_snapshot as _public_creator_snapshot
+from libs.agents.agreements import public_promotion_snapshot as _public_promotion_snapshot
+from libs.agents.agreements import terms_base_amount_usdc as _terms_base_amount_usdc
+from libs.agents.agreements import terms_deliverable_summary as _terms_deliverable_summary
+from libs.agents.agreements import terms_work_items as _terms_work_items
+from libs.agents.agreements import write_agreement_milestones as _write_agreement_milestones
 from libs.agents.brand import build_initial_terms
+from libs.agents.brand_campaign import (
+    CampaignEvent,
+    CampaignRunner,
+    CampaignStrategy,
+    http_transport_factory,
+)
+from libs.agents.brand_negotiator import BrandDisplayText, InProcessTransport
+from libs.agents.campaign_stream import campaign_event_stream
+from libs.agents.creator_context import repository_context_resolver
 from libs.agents.discovery import (
     DETAIL_READ_LIMIT,
     DISCOVERY_LIMIT,
@@ -375,11 +394,7 @@ def build_api_router(
         # 주소로 충분하다. 반면 BRAND 는 예치 tx 를 Phantom 으로 직접 서명해야 하는데
         # (funding.ts prepareBrandFunding + NegotiationDetail 의 brandAuthority 일치 검사),
         # 커스터디 키는 브라우저에서 서명할 수 없어 예치가 막힌다.
-        if (
-            settings.user_wallet_provision
-            and role == "CREATOR"
-            and not user.get("walletAddress")
-        ):
+        if settings.user_wallet_provision and role == "CREATOR" and not user.get("walletAddress"):
             from libs.web3.user_wallet import CUSTODY_PLATFORM, provision_user_wallet
 
             provisioned = provision_user_wallet(
@@ -617,9 +632,7 @@ def build_api_router(
                         payload.custom_category,
                     ),
                     "prohibited_industries": payload.blocked_domains,
-                    "supported_deliverable_formats": _preferred_formats(
-                        payload.preferred_content
-                    ),
+                    "supported_deliverable_formats": _preferred_formats(payload.preferred_content),
                     "rate_card": RateCard(
                         minBaseUsdc=payload.minimum_usdc,
                         maxBaseUsdc=max(payload.minimum_usdc, 800),
@@ -900,11 +913,11 @@ def build_api_router(
         return _ok(
             {
                 "personas": {
-                "brandCount": len(brands),
-                "creatorCount": len(creators),
-                "loginPasswordHint": "000000",
-                "brands": brands,
-                "creators": creators,
+                    "brandCount": len(brands),
+                    "creatorCount": len(creators),
+                    "loginPasswordHint": "000000",
+                    "brands": brands,
+                    "creators": creators,
                 }
             }
         )
@@ -1207,9 +1220,7 @@ def build_api_router(
             "status": "ACTIVE",
             "publicationStatus": "PUBLISHED",
             "acceptingOffers": True,
-            "availability": "AVAILABLE"
-            if creator.remaining_capacity > 0
-            else "AT_CAPACITY",
+            "availability": "AVAILABLE" if creator.remaining_capacity > 0 else "AT_CAPACITY",
             "active": True,
             "updatedAt": now,
         }
@@ -1890,9 +1901,7 @@ def build_api_router(
                 f"Cannot activate Promotion in {promotion.status} state.",
             )
 
-        activated = promotion.model_copy(
-            update={"status": "ACTIVE", "updated_at": _now_datetime()}
-        )
+        activated = promotion.model_copy(update={"status": "ACTIVE", "updated_at": _now_datetime()})
         repository.save_promotion(activated)
         _append_promotion_event(
             repository,
@@ -1936,20 +1945,14 @@ def build_api_router(
         )
         ranked = _apply_private_eligibility(promotion, detailed_candidates)
         selected_pair = next(
-            (
-                (candidate, creator)
-                for candidate, creator in ranked
-                if candidate.eligible
-            ),
+            ((candidate, creator) for candidate, creator in ranked if candidate.eligible),
             None,
         )
         selected = selected_pair[0] if selected_pair else None
         selected_creator = selected_pair[1] if selected_pair else None
         final_status = "COMPLETED" if selected is not None else "WAITING_FOR_CREATOR"
         final_event_type = (
-            "MATCH_RUN_COMPLETED"
-            if selected is not None
-            else "MATCH_RUN_WAITING_FOR_CREATOR"
+            "MATCH_RUN_COMPLETED" if selected is not None else "MATCH_RUN_WAITING_FOR_CREATOR"
         )
         final_history = [
             "READY",
@@ -2067,6 +2070,207 @@ def build_api_router(
             },
         )
         return _ok({"matchRun": match_run})
+
+    # --- campaign: discovery -> parallel A2A negotiation -> agreements (+ escrow) ----------
+
+    def _campaign_runner(
+        promotion_id: str,
+        request: PromotionCampaignRequest,
+        on_event: Callable[[CampaignEvent], None] | None,
+    ) -> CampaignRunner:
+        promotion = _get_promotion(repository, promotion_id)
+        promotion_document = repository.get_raw_document(
+            FirestorePaths.promotion(promotion_id)
+        ) or model_to_document(promotion)
+        brand = repository.get_raw_document(FirestorePaths.brand(promotion.brand_id))
+        per_creator = promotion.budget.max_per_creator_usdc
+        ceiling = request.ceiling_usdc if request.ceiling_usdc is not None else per_creator
+        opening = (
+            request.opening_amount_usdc
+            if request.opening_amount_usdc is not None
+            else _promotion_initial_offer_usdc(promotion_document) or min(ceiling, per_creator)
+        )
+        strategy = CampaignStrategy(
+            targetCreatorCount=request.target_creator_count,
+            maxCandidates=request.max_candidates,
+            parallelism=request.parallelism,
+            openingAmountUsdc=min(opening, ceiling),
+            ceilingUsdc=ceiling,
+            concessionPct=request.concession_pct,
+            maxRounds=request.max_rounds or promotion.autonomy.max_negotiation_rounds,
+        )
+        if settings.creator_a2a_mode == "http":
+            transport_factory = http_transport_factory(
+                timeout_seconds=settings.creator_a2a_timeout_seconds,
+                service_token=settings.a2a_service_token,
+            )
+        else:
+            # In-process creator agents: policies come from this repository, never the wire.
+            local_store = InMemoryA2ATaskStore(
+                {},
+                context_resolver=repository_context_resolver(
+                    repository, today=lambda: _policy_today(promotion)
+                ),
+                rationale_provider=lambda ctx, payload, decision: creator_rationale(
+                    settings=settings, context=ctx, payload=payload, decision=decision
+                ),
+            )
+
+            def transport_factory(_base_url: str) -> InProcessTransport:
+                return InProcessTransport(local_store)
+
+        def display_provider(
+            message_type: NegotiationMessageType, terms: AgreementTerms, fallback: str
+        ) -> BrandDisplayText:
+            display = _brand_negotiation_display(
+                settings=settings,
+                message_type=message_type,
+                terms=terms,
+                promotion=promotion,
+                rationale=fallback,
+            )
+            model = display.get("messageModel")
+            return BrandDisplayText(
+                text=str(display.get("message") or fallback),
+                provider=str(display.get("messageProvider") or "deterministic"),
+                model=model if isinstance(model, str) else None,
+            )
+
+        runner = CampaignRunner(
+            repository=repository,
+            promotion=promotion,
+            strategy=strategy,
+            transport_factory=transport_factory,
+            default_base_url=settings.creator_agent_base_url,
+            endpoint_overrides=settings.creator_agent_endpoints,
+            display_provider=display_provider,
+            on_event=on_event,
+            probe_cards=settings.creator_a2a_mode == "http",
+            brand=brand,
+            promotion_document=promotion_document,
+            settlement_hook=lambda agreement: _campaign_settlement(
+                promotion, agreement, campaign_id=runner.campaign_id
+            ),
+        )
+        return runner
+
+    def _campaign_settlement(
+        promotion: Promotion, agreement: dict[str, object], *, campaign_id: str
+    ) -> dict[str, object]:
+        """Fund the agreement through the existing escrow lock path, or say why not."""
+        agreement_id = str(agreement["agreementId"])
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion.promotion_id,
+            event_type="AGREEMENT_CREATED",
+            data={
+                "agreementId": agreement_id,
+                "negotiationId": agreement.get("negotiationId"),
+                "campaignId": campaign_id,
+                "creatorAgentId": agreement.get("creatorAgentId"),
+                "amountUsdc": agreement.get("currentAmountUsdc"),
+            },
+        )
+        if not promotion.autonomy.auto_escrow:
+            return {"status": "SKIPPED", "reason": "AUTO_ESCROW_DISABLED"}
+        if settings.web3_mode != "gateway":
+            return {"status": "SKIPPED", "reason": "WEB3_GATEWAY_REQUIRED"}
+        try:
+            locked = lock_escrow(
+                agreement_id,
+                authorization=None,
+                idempotency_key=f"campaign-{campaign_id}-{agreement_id}",
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            return {
+                "status": "FAILED",
+                "reason": str(detail.get("code") or exc.status_code),
+                "detail": str(detail.get("detail") or exc.detail),
+            }
+        data = cast(dict[str, object], locked["data"])
+        escrow = cast(dict[str, object], data.get("escrow") or {})
+        receipt = cast(dict[str, object], data.get("receipt") or {})
+        return {
+            "status": str(escrow.get("status") or "FAILED"),
+            "escrowId": escrow.get("escrowId"),
+            "lockedAmountBaseUnits": escrow.get("lockedAmountBaseUnits"),
+            "network": escrow.get("network"),
+            "signature": receipt.get("signature"),
+            "explorerUrl": receipt.get("explorerUrl"),
+        }
+
+    @router.post("/promotions/{promotion_id}/campaigns", status_code=status.HTTP_201_CREATED)
+    def run_campaign(
+        promotion_id: str, request: PromotionCampaignRequest | None = None
+    ) -> dict[str, object]:
+        runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion_id,
+            event_type="CAMPAIGN_STARTED",
+            data={"campaignId": runner.campaign_id},
+        )
+        result = runner.run()
+        agreements = [
+            document
+            for agreement_id in result.agreement_ids
+            if (document := repository.get_raw_document(FirestorePaths.agreement(agreement_id)))
+        ]
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion_id,
+            event_type="CAMPAIGN_COMPLETED",
+            data={
+                "campaignId": result.campaign_id,
+                "matchRunId": result.match_run_id,
+                "outcome": result.outcome,
+                "agreedCount": result.agreed_count,
+                "committedUsdc": result.committed_usdc,
+            },
+        )
+        return _ok(
+            {
+                "campaign": result.model_dump(by_alias=True, mode="json"),
+                "agreements": agreements,
+            }
+        )
+
+    @router.get("/promotions/{promotion_id}/campaigns/stream")
+    def stream_campaign(
+        promotion_id: str,
+        targetCreatorCount: int = 1,
+        maxCandidates: int = 5,
+        parallelism: int = 3,
+        openingAmountUsdc: int | None = None,
+        ceilingUsdc: int | None = None,
+        concessionPct: int = 50,
+        maxRounds: int | None = None,
+    ) -> StreamingResponse:
+        request = PromotionCampaignRequest(
+            targetCreatorCount=targetCreatorCount,
+            maxCandidates=maxCandidates,
+            parallelism=parallelism,
+            openingAmountUsdc=openingAmountUsdc,
+            ceilingUsdc=ceilingUsdc,
+            concessionPct=concessionPct,
+            maxRounds=maxRounds,
+        )
+        _get_promotion(repository, promotion_id)  # 404 before the stream opens
+
+        def events() -> Iterator[str]:
+            stream = campaign_event_stream(
+                lambda on_event: _campaign_runner(promotion_id, request, on_event),
+                status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
+            )
+            for event, data in stream:
+                yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @router.post("/promotions/{promotion_id}/match-runs", status_code=status.HTTP_201_CREATED)
     def create_match_run(
@@ -2213,10 +2417,9 @@ def build_api_router(
                 "새 Creator가 들어온 뒤 다시 시도해주세요.",
             )
         promotion = _get_promotion(repository, promotion_id)
-        promotion_document = (
-            repository.get_raw_document(FirestorePaths.promotion(promotion_id))
-            or model_to_document(promotion)
-        )
+        promotion_document = repository.get_raw_document(
+            FirestorePaths.promotion(promotion_id)
+        ) or model_to_document(promotion)
         brand = repository.get_raw_document(FirestorePaths.brand(promotion.brand_id))
         creator = repository.get_creator_profile_by_agent_id(creator_agent_id)
         if creator is None:
@@ -2462,9 +2665,7 @@ def build_api_router(
                         ) from exc
                     decision_type = _decision_type_from_document(creator_decision_document)
                     response_message_id = (
-                        response_message.message_id
-                        if response_message
-                        else f"message-{uuid4()}"
+                        response_message.message_id if response_message else f"message-{uuid4()}"
                     )
                     response_terms = creator_decision_document.get("terms")
                     current_terms = (
@@ -2855,9 +3056,8 @@ def build_api_router(
                 if isinstance(paid_verification, dict)
                 else ""
             )
-            if (
-                isinstance(paid_verification, dict)
-                and (paid_verification.get("receiptId") or paid_status in {"SETTLED", "FAILED"})
+            if isinstance(paid_verification, dict) and (
+                paid_verification.get("receiptId") or paid_status in {"SETTLED", "FAILED"}
             ):
                 system_messages.append(
                     _paysh_negotiation_system_message(
@@ -2870,8 +3070,7 @@ def build_api_router(
                 f"{COLLECTIONS.match_runs}/{match_run_id}/{COLLECTIONS.match_candidates}"
             )
             candidate = next(
-                (c for c in candidates if c.get("creatorAgentId") == creator_agent_id),
-                None
+                (c for c in candidates if c.get("creatorAgentId") == creator_agent_id), None
             )
 
             if (
@@ -2886,51 +3085,57 @@ def build_api_router(
                 result = receipt.get("verificationResult", {})
 
                 # Create system message for creator verification
-                system_messages.append({
-                    "messageId": f"system-paysh-creator-{candidate.get('creatorId', 'unknown')}",
-                    "negotiationId": negotiation_id,
-                    "contextId": negotiation.get("contextId"),
-                    "taskId": negotiation.get("taskId"),
-                    "role": "ROLE_SYSTEM",
-                    "sender": "SYSTEM",
-                    "senderRole": "SYSTEM",
-                    "messageType": "VERIFICATION_EVENT",
-                    "payload": {
-                        "schema": "knot.agent-payment.v1",
-                        "type": "VERIFICATION_EVENT",
-                        "event": "CREATOR_VERIFICATION",
-                        "provider": "pay.sh",
-                        "protocol": "x402",
-                        "status": "CONFIRMED" if candidate.get("verificationPassed") else "FAILED",
-                        "amountUsdc": receipt.get("costUsdc", 0.10),
-                        "receiptId": receipt.get("receiptId", "N/A"),
-                        "network": receipt.get("network", "SANDBOX"),
-                        "display": {
-                            "headline": "pay.sh 후보 검증",
-                            "message": (
-                                "후보 검증 API를 사용했어요. "
-                                f"{receipt.get('costUsdc', 0.10)} USDC · "
-                                f"{receipt.get('network', 'SANDBOX')}"
-                            ),
-                            "rationale": "크리에이터 보상이 아니라 Agent 운영 검증 비용입니다.",
+                system_messages.append(
+                    {
+                        "messageId": (
+                            f"system-paysh-creator-{candidate.get('creatorId', 'unknown')}"
+                        ),
+                        "negotiationId": negotiation_id,
+                        "contextId": negotiation.get("contextId"),
+                        "taskId": negotiation.get("taskId"),
+                        "role": "ROLE_SYSTEM",
+                        "sender": "SYSTEM",
+                        "senderRole": "SYSTEM",
+                        "messageType": "VERIFICATION_EVENT",
+                        "payload": {
+                            "schema": "knot.agent-payment.v1",
+                            "type": "VERIFICATION_EVENT",
+                            "event": "CREATOR_VERIFICATION",
+                            "provider": "pay.sh",
+                            "protocol": "x402",
+                            "status": "CONFIRMED"
+                            if candidate.get("verificationPassed")
+                            else "FAILED",
+                            "amountUsdc": receipt.get("costUsdc", 0.10),
+                            "receiptId": receipt.get("receiptId", "N/A"),
+                            "network": receipt.get("network", "SANDBOX"),
+                            "display": {
+                                "headline": "pay.sh 후보 검증",
+                                "message": (
+                                    "후보 검증 API를 사용했어요. "
+                                    f"{receipt.get('costUsdc', 0.10)} USDC · "
+                                    f"{receipt.get('network', 'SANDBOX')}"
+                                ),
+                                "rationale": "크리에이터 보상이 아니라 Agent 운영 검증 비용입니다.",
+                            },
                         },
-                    },
-                    "content": {
-                        "event": "CREATOR_VERIFICATION",
-                        "provider": "pay.sh (Nansen API)",
-                        "cost_usdc": receipt.get("costUsdc", 0.10),
-                        "receipt_id": receipt.get("receiptId", "N/A"),
-                        "network": receipt.get("network", "SANDBOX"),
-                        "result": {
-                            "bot_percentage": result.get("bot_percentage"),
-                            "engagement_quality": result.get("engagement_quality"),
-                            "follower_count": result.get("follower_count"),
-                            "passed": candidate.get("verificationPassed", False)
-                        }
-                    },
-                    "createdAt": candidate.get("createdAt", negotiation.get("createdAt")),
-                    "sequence": 0
-                })
+                        "content": {
+                            "event": "CREATOR_VERIFICATION",
+                            "provider": "pay.sh (Nansen API)",
+                            "cost_usdc": receipt.get("costUsdc", 0.10),
+                            "receipt_id": receipt.get("receiptId", "N/A"),
+                            "network": receipt.get("network", "SANDBOX"),
+                            "result": {
+                                "bot_percentage": result.get("bot_percentage"),
+                                "engagement_quality": result.get("engagement_quality"),
+                                "follower_count": result.get("follower_count"),
+                                "passed": candidate.get("verificationPassed", False),
+                            },
+                        },
+                        "createdAt": candidate.get("createdAt", negotiation.get("createdAt")),
+                        "sequence": 0,
+                    }
+                )
 
         # 2. Content verification (after creator submits content)
         agreement_id = negotiation.get("agreementId")
@@ -2939,7 +3144,8 @@ def build_api_router(
             try:
                 all_evidence = repository.list_raw_documents(COLLECTIONS.evidence)
                 agreement_evidence = [
-                    e for e in all_evidence
+                    e
+                    for e in all_evidence
                     if e.get("agreementId") == agreement_id and e.get("contentVerificationReceipt")
                 ]
 
@@ -3467,9 +3673,7 @@ def build_api_router(
                 "evidenceId": evidence_id,
                 "status": verified["status"],
                 "outcome": outcome.status,
-                "violationCodes": [
-                    violation.code for violation in policy_decision.violations
-                ],
+                "violationCodes": [violation.code for violation in policy_decision.violations],
             },
         )
         if outcome.status == EVIDENCE_REJECTED:
@@ -3792,9 +3996,7 @@ def build_api_router(
         _get_agreement_document(repository, agreement_id)
 
         all_disputes = repository.list_raw_documents(COLLECTIONS.disputes)
-        agreement_disputes = [
-            d for d in all_disputes if d.get("agreementId") == agreement_id
-        ]
+        agreement_disputes = [d for d in all_disputes if d.get("agreementId") == agreement_id]
 
         # Sort by creation date descending
         agreement_disputes.sort(key=lambda d: str(d.get("createdAt", "")), reverse=True)
@@ -3818,21 +4020,21 @@ def build_api_router(
 You are an impartial dispute resolver for creator-brand sponsorship agreements.
 
 DISPUTE DETAILS:
-- Raised by: {dispute['raisedBy']}
-- Reason: {dispute['reason']}
-- Description: {dispute['description']}
-- Amount: ${dispute['amountUsdc']} USDC
-- Evidence URL: {dispute.get('evidenceUrl', 'None')}
+- Raised by: {dispute["raisedBy"]}
+- Reason: {dispute["reason"]}
+- Description: {dispute["description"]}
+- Amount: ${dispute["amountUsdc"]} USDC
+- Evidence URL: {dispute.get("evidenceUrl", "None")}
 
 AGREEMENT TERMS:
-- Product: {agreement.get('promotionSnapshot', {}).get('productName', 'Unknown')}
-- Deliverable: {agreement.get('terms', {}).get('deliverables', [])}
-- Usage Rights: {agreement.get('terms', {}).get('usageRights', 'Unknown')}
+- Product: {agreement.get("promotionSnapshot", {}).get("productName", "Unknown")}
+- Deliverable: {agreement.get("terms", {}).get("deliverables", [])}
+- Usage Rights: {agreement.get("terms", {}).get("usageRights", "Unknown")}
 
 MILESTONE:
-- ID: {milestone.get('milestoneId')}
-- Trigger: {milestone.get('trigger')}
-- Release %: {milestone.get('releasePct')}%
+- ID: {milestone.get("milestoneId")}
+- Trigger: {milestone.get("trigger")}
+- Release %: {milestone.get("releasePct")}%
 
 Based on the dispute details and agreement terms, provide a fair resolution.
 
@@ -3942,11 +4144,13 @@ Respond in JSON format:
                 try:
                     escrow = _find_escrow_by_agreement(repository, agreement_id)
                     if not escrow:
-                        errors.append({
-                            "milestoneId": milestone_id,
-                            "agreementId": agreement_id,
-                            "error": "ESCROW_NOT_FOUND",
-                        })
+                        errors.append(
+                            {
+                                "milestoneId": milestone_id,
+                                "agreementId": agreement_id,
+                                "error": "ESCROW_NOT_FOUND",
+                            }
+                        )
                         continue
 
                     escrow_id = _require_document_str(escrow, "escrowId")
@@ -4000,17 +4204,21 @@ Respond in JSON format:
 
                 except Exception as e:
                     logger.error(f"Failed to auto-release milestone {milestone_id}: {e}")
-                    errors.append({
-                        "milestoneId": milestone_id,
-                        "agreementId": agreement_id,
-                        "error": str(e),
-                    })
+                    errors.append(
+                        {
+                            "milestoneId": milestone_id,
+                            "agreementId": agreement_id,
+                            "error": str(e),
+                        }
+                    )
 
-        return _ok({
-            "releasedCount": released_count,
-            "errors": errors,
-            "checkedAt": now_utc.isoformat(),
-        })
+        return _ok(
+            {
+                "releasedCount": released_count,
+                "errors": errors,
+                "checkedAt": now_utc.isoformat(),
+            }
+        )
 
     def _has_active_dispute_for_milestone(
         repository: KnotRepository,
@@ -4449,9 +4657,7 @@ Respond in JSON format:
         # 검증할 콘텐츠가 애초에 없기 때문이다.
         passed_evidence = None
         if str(milestone.get("trigger")) == DEPOSIT_MILESTONE_TRIGGER:
-            agreement_document = repository.get_raw_document(
-                FirestorePaths.agreement(agreement_id)
-            )
+            agreement_document = repository.get_raw_document(FirestorePaths.agreement(agreement_id))
             agreement_status = str((agreement_document or {}).get("status") or "")
             if agreement_document is None or agreement_status in {
                 "DRAFT",
@@ -4877,56 +5083,6 @@ def _current_negotiation_round(messages: list[dict[str, object]]) -> int:
     return max(rounds) if rounds else 1
 
 
-def _terms_base_amount_usdc(terms: dict[str, object]) -> int | None:
-    compensation = terms.get("compensation")
-    if not isinstance(compensation, dict):
-        return None
-    amount = compensation.get("baseAmountUsdc")
-    if isinstance(amount, int):
-        return amount
-    if isinstance(amount, str) and amount.isdigit():
-        return int(amount)
-    return None
-
-
-def _terms_work_items(terms: dict[str, object]) -> list[dict[str, object]]:
-    deliverables = terms.get("deliverables")
-    if not isinstance(deliverables, list):
-        return []
-    items: list[dict[str, object]] = []
-    for deliverable in deliverables:
-        if not isinstance(deliverable, dict):
-            continue
-        count = deliverable.get("count")
-        if not isinstance(count, int) or count <= 0:
-            continue
-        items.append(
-            {
-                "format": deliverable.get("format"),
-                "count": count,
-                "postWindow": deliverable.get("postWindow"),
-                "revisionRounds": deliverable.get("revisionRounds"),
-            }
-        )
-    return items
-
-
-def _terms_deliverable_summary(terms: dict[str, object]) -> str:
-    labels = {
-        "reel": "릴스",
-        "short": "숏츠",
-        "post": "게시글",
-        "story": "스토리",
-    }
-    parts: list[str] = []
-    for item in _terms_work_items(terms):
-        format_value = str(item.get("format") or "content")
-        count = item.get("count")
-        label = labels.get(format_value, format_value)
-        parts.append(f"{label} {count}개")
-    return ", ".join(parts) if parts else "작업 조건 미정"
-
-
 def _require_auth_user(
     token_verifier: FirebaseTokenVerifier,
     authorization: str | None,
@@ -5328,8 +5484,7 @@ def _brand_dashboard(repository: KnotRepository, user: dict[str, object]) -> dic
     agreements = [
         document
         for document in repository.list_raw_documents(COLLECTIONS.agreements)
-        if document.get("brandId") == brand_id
-        or str(document.get("promotionId")) in promotion_ids
+        if document.get("brandId") == brand_id or str(document.get("promotionId")) in promotion_ids
     ]
     negotiations = [
         document
@@ -5631,9 +5786,7 @@ def _creator_agent_view(
     publication_status = str(agent.get("publicationStatus") or "DRAFT")
     accepting_offers = bool(agent.get("acceptingOffers"))
     default_availability = (
-        "AVAILABLE"
-        if publication_status == "PUBLISHED" and accepting_offers
-        else "UNAVAILABLE"
+        "AVAILABLE" if publication_status == "PUBLISHED" and accepting_offers else "UNAVAILABLE"
     )
     availability = str(agent.get("availability") or default_availability)
     return {
@@ -6781,9 +6934,7 @@ def _youtube_oembed_source_page(
     settings: Settings,
 ) -> tuple[FetchedSourcePage | None, str | None]:
     del settings
-    endpoint = "https://www.youtube.com/oembed?" + urlencode(
-        {"url": source_url, "format": "json"}
-    )
+    endpoint = "https://www.youtube.com/oembed?" + urlencode({"url": source_url, "format": "json"})
     try:
         _assert_public_dns_target(endpoint)
         response = httpx.get(
@@ -6809,9 +6960,7 @@ def _youtube_oembed_source_page(
         if isinstance(link, str) and link.startswith("https://")
     )
     description = (
-        f"{title or 'YouTube video'} · {author_name}"
-        if author_name
-        else title or "YouTube video"
+        f"{title or 'YouTube video'} · {author_name}" if author_name else title or "YouTube video"
     )
     text = _compact_text(
         " ".join(
@@ -6856,9 +7005,7 @@ def _youtube_oembed_creator_profile_draft(
     )
     text = f"{title} {description} {fetched.text}"
     category = _infer_category(text)
-    tags = list(dict.fromkeys([*_keyword_hits(text), *_creator_mood_hints(text), "youtube"]))[
-        :8
-    ]
+    tags = list(dict.fromkeys([*_keyword_hits(text), *_creator_mood_hints(text), "youtube"]))[:8]
     metrics = _youtube_creator_metrics(youtube_stats)
     unknown_fields = _youtube_unknown_fields(metrics)
     provider = "youtube-data-api" if youtube_stats else "youtube-oembed"
@@ -7132,11 +7279,7 @@ def _youtube_profile_counts(stats: YoutubePublicStats | None) -> dict[str, int]:
         "channelViewCount": stats.channel_view_count,
         "videoCount": stats.video_count,
     }
-    return {
-        key: value
-        for key, value in counts.items()
-        if isinstance(value, int) and value >= 0
-    }
+    return {key: value for key, value in counts.items() if isinstance(value, int) and value >= 0}
 
 
 def _youtube_analysis_notes(
@@ -7675,7 +7818,8 @@ def _normalize_gemini_creator_draft(
         "summary": summary,
         "representativeUrls": _safe_https_list(data.get("representativeUrls")),
         "publicSignals": _creator_public_signals(source_url, fetched, None),
-        "unknownFields": _string_list(data.get("unknownFields")) or [
+        "unknownFields": _string_list(data.get("unknownFields"))
+        or [
             "averageViews",
             "followerCount",
             "recentPosts",
@@ -7903,9 +8047,7 @@ def _instagram_profile_counts(
         "estimatedEngagementRate": metrics.get("estimatedEngagementRate"),
     }
     return {
-        key: value
-        for key, value in counts.items()
-        if isinstance(value, int | float) and value >= 0
+        key: value for key, value in counts.items() if isinstance(value, int | float) and value >= 0
     }
 
 
@@ -8546,7 +8688,7 @@ def _agreement_document(
             status.HTTP_409_CONFLICT,
             "INVALID_STATE_TRANSITION",
             "Accepted negotiation is missing agreement terms.",
-    )
+        )
     agreement_terms = AgreementTerms.model_validate(terms)
     computed_terms_hash = terms_hash(agreement_terms)
     if artifact_terms_hash != computed_terms_hash:
@@ -8586,50 +8728,6 @@ def _agreement_document(
         "escrowId": None,
         "fundingTransactionSignature": None,
         "createdAt": created_at,
-    }
-
-
-def _public_promotion_snapshot(promotion: dict[str, object] | None) -> dict[str, object] | None:
-    if promotion is None:
-        return None
-    return {
-        "promotionId": promotion.get("promotionId"),
-        "title": promotion.get("title"),
-        "productName": promotion.get("productName") or promotion.get("title"),
-        "category": promotion.get("category"),
-        "objective": promotion.get("objective"),
-    }
-
-
-def _public_brand_snapshot(brand: dict[str, object] | None) -> dict[str, object] | None:
-    if brand is None:
-        return None
-    return {
-        "brandId": brand.get("brandId"),
-        "displayName": brand.get("displayName") or brand.get("brandName"),
-        "websiteUrl": brand.get("websiteUrl"),
-        "categories": brand.get("categories", []),
-        "targetAudience": brand.get("targetAudience"),
-        "description": brand.get("description"),
-    }
-
-
-def _brand_display_name(brand: dict[str, object] | None, *, fallback: str) -> str:
-    if brand is None:
-        return fallback
-    value = brand.get("displayName") or brand.get("brandName")
-    return str(value) if isinstance(value, str) and value else fallback
-
-
-def _public_creator_snapshot(creator: CreatorProfile | None) -> dict[str, object] | None:
-    if creator is None:
-        return None
-    return {
-        "creatorId": creator.creator_id,
-        "creatorAgentId": creator.creator_agent_id,
-        "displayName": creator.display_name,
-        "categories": creator.categories,
-        "completedDealCount": creator.completed_deal_count,
     }
 
 
@@ -8691,36 +8789,6 @@ def _write_a2a_task_events(
     )
 
 
-def _write_agreement_milestones(
-    repository: KnotRepository,
-    agreement: dict[str, object],
-) -> None:
-    agreement_id = _require_document_str(agreement, "agreementId")
-    terms = AgreementTerms.model_validate(agreement["terms"])
-    locked_amount = lock_amount_base_units(terms)
-    milestone_amounts = milestone_amounts_base_units(locked_amount, terms.milestones)
-    for milestone in terms.milestones:
-        amount_base_units = milestone_amounts.get(milestone.id, 0)
-        repository.save_raw_document(
-            FirestorePaths.milestone(agreement_id, milestone.id),
-            {
-                "milestoneId": milestone.id,
-                "agreementId": agreement_id,
-                "title": milestone.trigger,
-                "trigger": milestone.trigger,
-                "releasePct": milestone.release_pct,
-                "amountBaseUnits": str(amount_base_units),
-                "amountUsdc": str(amount_base_units // 1_000_000),
-                "status": "PENDING",
-                "evidence": {},
-                "verificationResult": {},
-                "releaseTransactionSignature": None,
-                "releasedAt": None,
-                "createdAt": agreement["createdAt"],
-            },
-        )
-
-
 def _match_candidate_by_agent_id(
     repository: KnotRepository,
     match_run_id: str,
@@ -8757,9 +8825,9 @@ def _evidence_observations(
         try:
             # Extract brand keywords from product name and category
             brand_keywords = []
-            if hasattr(terms, 'product_name') and terms.product_name:
+            if hasattr(terms, "product_name") and terms.product_name:
                 brand_keywords.append(terms.product_name)
-            if hasattr(terms, 'category') and terms.category:
+            if hasattr(terms, "category") and terms.category:
                 brand_keywords.append(terms.category)
 
             # Call pay.sh content verification API
@@ -8779,9 +8847,7 @@ def _evidence_observations(
             # Check prohibited claims in URL (simple text check)
             url_lower = url.lower()
             prohibited_claims_found = [
-                claim
-                for claim in terms.constraints.prohibited_claims
-                if claim.lower() in url_lower
+                claim for claim in terms.constraints.prohibited_claims if claim.lower() in url_lower
             ]
 
             # Determine if content quality is acceptable
@@ -8821,9 +8887,7 @@ def _evidence_observations(
     # Fallback: Simple URL-based checks (for testing/development)
     url_lower = url.lower()
     prohibited_claims_found = [
-        claim
-        for claim in terms.constraints.prohibited_claims
-        if claim.lower() in url_lower
+        claim for claim in terms.constraints.prohibited_claims if claim.lower() in url_lower
     ]
     observations = EvidenceObservations(
         urlReachable="unreachable" not in url_lower,
@@ -9163,8 +9227,7 @@ def _paysh_operation_id(
 
 def _paysh_resource_allowed(settings: Settings, resource_id: str) -> bool:
     return any(
-        resource_id.startswith(prefix)
-        for prefix in settings.paysh_allowed_resource_prefixes
+        resource_id.startswith(prefix) for prefix in settings.paysh_allowed_resource_prefixes
     )
 
 
@@ -9306,9 +9369,7 @@ def _paysh_negotiation_system_message(
     else:
         message = "유료 검증을 완료하지 못해 공개 정보만 사용했어요."
         rationale = str(
-            paid_verification.get("detail")
-            or paid_verification.get("continuation")
-            or status_value
+            paid_verification.get("detail") or paid_verification.get("continuation") or status_value
         )
 
     payload = {
@@ -9674,9 +9735,7 @@ def _lock_with_web3_gateway(
                 "termsHash": agreement["termsHash"],
                 "expectedAmountBaseUnits": str(locked_amount),
                 "milestoneIds": list(milestone_amounts.keys()),
-                "milestoneAmountsBaseUnits": [
-                    str(amount) for amount in milestone_amounts.values()
-                ],
+                "milestoneAmountsBaseUnits": [str(amount) for amount in milestone_amounts.values()],
                 "mint": settings.usdc_mint,
                 "programId": settings.escrow_program_id,
                 "network": settings.escrow_network,
@@ -9950,11 +10009,7 @@ def _require_confirmed_gateway_receipt(
     *,
     expected: dict[str, object],
 ) -> dict[str, object]:
-    mismatches = [
-        key
-        for key, value in expected.items()
-        if gateway_receipt.get(key) != value
-    ]
+    mismatches = [key for key, value in expected.items() if gateway_receipt.get(key) != value]
     signature = gateway_receipt.get("signature")
     if gateway_receipt.get("status") != "CONFIRMED":
         mismatches.append("status")

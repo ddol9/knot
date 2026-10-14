@@ -41,6 +41,7 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+  .note { margin: 6px 10px; padding: 8px 10px; border-radius: 8px; background: #f4f6fb; border: 1px dashed #c9d1e3; font-size: 12.5px; line-height: 1.5; }
   .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
   .pill.ok { background: var(--creator-soft); color: var(--creator); }
   .pill.bad { background: var(--bad-soft); color: var(--bad); }
@@ -169,6 +170,9 @@
     d.querySelector('.txt').textContent = t.message;
     col.querySelector('.chat').appendChild(d);
   }
+  function note(col, html) {
+    const d = document.createElement('div'); d.className = 'note'; d.innerHTML = html; col.appendChild(d);
+  }
   function finalBox(col, kind, text) {
     const d = document.createElement('div'); d.className = 'final ' + kind; d.textContent = text; col.appendChild(d);
     status(col, '종료', false);
@@ -214,6 +218,20 @@
                       ROUND_LIMIT: '⏱ 라운드 초과', ESCALATED: '🙋 사람 검토 필요', CANCELED: '⏹ 목표 도달로 취소' }[r.outcome] || r.outcome;
       finalBox(column(d.creatorAgentId), r.outcome, label);
     });
+    es.addEventListener('agreement_created', (ev) => {
+      const d = JSON.parse(ev.data); const col = column(d.creatorAgentId);
+      note(col, `📄 합의서 ${d.agreementId}<br><span class="mono">termsHash ${String(d.termsHash).slice(0, 20)}…</span><br>${d.amountUsdc} USDC · ${d.deliverableSummary}`);
+    });
+    es.addEventListener('escrow_locked', (ev) => {
+      const d = JSON.parse(ev.data);
+      note(column(d.creatorAgentId), `🔒 에스크로 잠금 ${d.escrowId || ''}<br><span class="mono">${d.signature || ''}</span>`);
+    });
+    const escrowNote = (ev) => {
+      const d = JSON.parse(ev.data);
+      note(column(d.creatorAgentId), `🔓 에스크로 ${d.status}: ${d.reason || ''} ${d.detail || ''}`);
+    };
+    es.addEventListener('escrow_skipped', escrowNote);
+    es.addEventListener('escrow_failed', escrowNote);
     es.addEventListener('campaign_result', (ev) => {
       const r = JSON.parse(ev.data).result;
       const label = { TARGET_REACHED: '🎯 목표 달성', PARTIAL: '🟡 일부 합의', NO_AGREEMENT: '❌ 합의 없음', NO_CANDIDATES: '❌ 후보 없음' }[r.outcome] || r.outcome;

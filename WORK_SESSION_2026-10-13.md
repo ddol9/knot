@@ -276,3 +276,27 @@ cd /Users/yewonchoi/Desktop/git/knot
 - [ ] 레지스트리 healthStatus/lastSeenAt 갱신 + 최근 협상 성공률을 순위에 반영
 - [ ] Firestore 백엔드에서 복합 인덱스 실측
 - [ ] 미커밋. 커밋/PR은 확인 후.
+
+## 세션 4 (2026-10-14, 브랜치 `yewon/a2a-negotiation`) — 합의 → Agreement → 에스크로
+
+중간 PR #2 (https://github.com/ddol9/knot/pull/2) 올리고 main과 동기화(충돌 없음). 이어서 "에이전트끼리 합의 → 자금 잠금" 루프를 닫았다.
+
+### 추가/변경
+- `libs/agents/agreements.py` — `routes.py`에 갇혀 있던 합의 투영 헬퍼 이동 + `build_negotiation_document`/`build_agreement_document`(termsHash 재계산, 불일치 `AgreementTermsMismatch`)/`write_agreement_milestones`.
+- `libs/agents/creator_context.py` — 크리에이터 컨텍스트 해석기(크리에이터 에이전트·API 로컬 모드 공용).
+- `libs/agents/brand_campaign.py` — 합의 시 `negotiations/`·`agreements/`(+milestones) 영속화, 후보 문서 링크, `settlement_hook`, 이벤트 `agreement_created`/`escrow_locked|skipped|failed`. 해시 불일치는 합의로 세지 않고 예산 반환.
+- `apps/api/routes.py` — `POST /api/v1/promotions/{id}/campaigns`, `GET …/campaigns/stream`. 합의마다 `autonomy.autoEscrow`면 기존 `lock_escrow`를 같은 스코프에서 직접 호출(결제 코드 무수정). 타임라인 `CAMPAIGN_STARTED`/`AGREEMENT_CREATED`/`ESCROW_LOCKED`/`CAMPAIGN_COMPLETED`.
+- `apps/api/schemas.py` — `PromotionCampaignRequest`(금액 생략 시 프로모션 `initialOffer`/`maxPerCreatorUsdc`).
+- `apps/brand_agent` — 공용 스트림 사용, 에스크로 `SETTLEMENT_VIA_PRODUCT_API`; 관전 페이지·CLI에 합의서/에스크로 표시.
+- 테스트: `tests/test_agreements.py`(2), `tests/test_api_campaigns.py`(6: gateway 모의 락 2건, autoEscrow off, gateway 없음, 기본 금액, SSE, 404). 전체 214 passed / 5 skipped.
+- ExecPlan `.agent/execplans/07-campaign-agreement-escrow.md`, 문서 `docs/09` 부록 3.
+
+### 메모
+- 기존 락 경로는 `agreements/{id}`를 `FUNDED`로 바꾸지 않는다(자금 확인은 별도 단계). 캠페인도 그 의미를 그대로 따른다.
+- `matchRuns.status`를 캠페인 어휘에서 docs/07 어휘(`AGREED`/`EXHAUSTED`)로 바꾸고 `campaignOutcome`을 함께 저장.
+- `a2a_multi_agent.sh` 재실행 시 8083에 이전 브랜드 프로세스가 남아 있으면 새 코드가 안 뜬다. 먼저 종료할 것.
+
+### 남은 것 / 다음
+- [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전(`/campaigns/stream`) 연결
+- [ ] 레지스트리 healthStatus/lastSeenAt + 협상 성공률 순위 반영
+- [ ] Firestore 복합 인덱스 실측

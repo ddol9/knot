@@ -361,3 +361,32 @@ scripts/local/a2a_multi_agent.sh                      # 크리에이터 2 프로
 cd backend && python scripts/a2a_campaign.py --category beauty --total 1300 --target 2
 # 브라우저: http://127.0.0.1:8083/brand/v1/campaign
 ```
+
+## 부록 3: 캠페인 합의 → Agreement → 에스크로 (2026-10-14 추가)
+
+캠페인에서 크리에이터 태스크가 `COMPLETED`로 끝나면 브랜드 쪽이 term-sheet 아티팩트(`knot.term-sheet.v1`)를 제품 문서로 바꾼다. 결제 코드는 호출만 하고 복제하지 않는다.
+
+```text
+A2A Task COMPLETED (artifact: agreementId, termsHash, terms)
+→ termsHash 재계산·비교 (불일치 = 합의로 세지 않고 예산 반환)
+→ negotiations/{id} (status AGREED, creatorPolicySnapshot redacted)
+→ agreements/{agreementId} (FUNDING_REQUIRED) + agreements/{id}/milestones/*
+→ matchRuns/{id}/candidates/{creatorId}.agreementId 링크
+→ settlement hook
+     · 제품 API: autonomy.autoEscrow && web3_mode=gateway → 기존 POST /agreements/{id}/escrow:lock 과 같은 함수
+       (멱등키 campaign-{campaignId}-{agreementId}) → escrows/{id} LOCKED, 타임라인 ESCROW_LOCKED
+     · 그 외: SKIPPED (AUTO_ESCROW_DISABLED | WEB3_GATEWAY_REQUIRED | SETTLEMENT_VIA_PRODUCT_API)
+```
+
+### 어디서 돌리나
+- **제품 API** (`apps/api`): `POST /api/v1/promotions/{id}/campaigns`, `GET /api/v1/promotions/{id}/campaigns/stream`(SSE). API가 브랜드 에이전트 런타임이며 단일 협상 경로와 같은 저장소·결제 경로를 쓴다. `KNOT_CREATOR_A2A_MODE=local`이면 인프로세스 크리에이터 에이전트(정책은 저장소에서), `http`면 레지스트리 `baseUrl`/`KNOT_CREATOR_AGENT_ENDPOINTS`.
+- **독립 브랜드 에이전트** (`apps/brand_agent`): 합의 문서까지 만들고 에스크로는 `SETTLEMENT_VIA_PRODUCT_API`로 건너뛴다.
+
+### 이벤트 (SSE)
+`agreement_created {agreementId, negotiationId, termsHash, amountUsdc, deliverableSummary}` → `escrow_locked {escrowId, signature, explorerUrl}` | `escrow_skipped {reason}` | `escrow_failed {reason, detail}`
+
+### 코드
+- `libs/agents/agreements.py` — 투영 헬퍼(API와 공유), `build_negotiation_document`, `build_agreement_document`(해시 검증), `write_agreement_milestones`
+- `libs/agents/creator_context.py` — 저장소 기반 크리에이터 컨텍스트 해석기(크리에이터 에이전트 + API 로컬 모드 공용)
+- `libs/agents/brand_campaign.py` — `settlement_hook`, `CandidateNegotiation.agreementId/escrow`, `matchRuns.status`는 docs/07 어휘(`AGREED`/`EXHAUSTED`) + `campaignOutcome`
+- `libs/agents/campaign_stream.py` — 러너 이벤트 → SSE (두 앱 공용)
