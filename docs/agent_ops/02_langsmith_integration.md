@@ -4,7 +4,70 @@
 
 ---
 
-## 개요
+## 실제 구현 (2026-10-14) — `libs/observability/tracing.py`
+
+아래 설계안(`@traceable`, LangGraph)과 달리, 실제 코드는 **외부 의존성 없는 작은 트레이서**를 쓰고 LangSmith는 선택 싱크다.
+ExecPlan: `.agent/execplans/12-agent-tracing.md`.
+
+**무엇이 찍히나** — 스팬이 끝날 때마다 로거 `knot.trace`에 JSON 한 줄:
+`{"traceId","spanId","parentSpanId","name","durationMs","status":"ok|error","error"?,"attrs","events"?,"redacted"?,"startedAt","service"}`
+
+| 스팬 | 어디서 | attrs(요약) |
+|---|---|---|
+| `campaign.run` | `CampaignRunner.run` | campaignId, matchRunId, promotionId, targetCreatorCount, budgetUsdc → outcome, agreedCount, committedUsdc, agreementIds |
+| `campaign.discovery` | 탐색 | queried, ranked, probed, selected, selectedAgentIds |
+| `negotiation.run` | `BrandNegotiator.run` (워커 스레드도 캠페인 trace 상속) | creatorAgentId, contextId → outcome, rounds, finalAmountUsdc, agreementId, taskState; `turn` 이벤트(round/role/type/amountUsdc/allowed) |
+| `a2a.send` / `a2a.cancel` | 브랜드 → 크리에이터 메시지 | type, round, messageId → taskId, taskState, replyType |
+| `creator.decide` | `InMemoryA2ATaskStore.send_message` (크리에이터 프로세스) | tenant, messageType, round → decisionType, action, violationCodes, rationaleProvider |
+| `llm.call` | `libs/ai/gemini._generate_json` | purpose, provider, model, mode → fallbackReason (프롬프트·응답 본문은 기록하지 않음) |
+
+`ceiling*`, `min*`, `policy*` 속성은 트레이서가 드롭하고 `redacted`에 키만 남긴다(비공개 협상 상태 보호).
+
+**상관 id** — 미들웨어가 요청마다 trace를 바인딩(`X-Trace-Id`/`X-Request-Id` 재사용, 응답 `X-Trace-Id`), A2A 클라이언트가 `X-Trace-Id`/`X-Parent-Span-Id`를 보내므로 크리에이터 프로세스의 `creator.decide`가 브랜드의 `a2a.send` 아래에 붙는다.
+`traceId`는 SSE `status`/`campaign_result`, `CampaignResult.traceId`, `BrandNegotiationResult.traceId`, `matchRuns/{id}.traceId`, API `meta.traceId`에 들어간다.
+
+**보기**
+```bash
+# 로컬 데모 후 (scripts/local/a2a_multi_agent.sh 는 /tmp/knot-local/*.log 에 남긴다)
+cd backend
+python scripts/trace_tail.py /tmp/knot-local/brand-agent.log                       # 브랜드 쪽 트리
+python scripts/trace_tail.py /tmp/knot-local/brand-agent.log /tmp/knot-local/creator-a.log   # 크리에이터 스팬까지 합친 트리
+python scripts/trace_tail.py -f /tmp/knot-local/brand-agent.log                    # 따라가기
+```
+Cloud Run에서는 stderr의 JSON 라인이 Cloud Logging에 구조화되어 들어가므로 `jsonPayload.traceId="..."`로 필터하면 된다.
+
+**설정**
+| 환경 변수 | 기본 | 의미 |
+|---|---|---|
+| `KNOT_TRACING` | on | `0/false`면 스팬을 내보내지 않음(id 부착은 유지) |
+| `KNOT_TRACING_SINK` | `log` (LangSmith 키가 있으면 `langsmith`) | `log` \| `langsmith` |
+| `LANGSMITH_API_KEY` 또는 `LANGCHAIN_API_KEY` | — | 있으면 LangSmith 싱크 시도 |
+| `LANGSMITH_PROJECT` 또는 `LANGCHAIN_PROJECT` | `knot-agent-ops` | LangSmith 프로젝트 |
+
+**LangSmith 켜기**
+```bash
+pip install langsmith                 # 선택 의존성. 없으면 경고 1회 후 로그 싱크로 폴백
+export LANGSMITH_API_KEY=ls_...
+export LANGSMITH_PROJECT=knot-agent-ops
+# (KNOT_TRACING_SINK 를 따로 줄 필요 없음 — 키가 있으면 langsmith 가 기본)
+```
+스팬은 `RunTree`로 미러링된다(`llm.*`→`llm`, `a2a.*`→`tool`, 나머지 `chain`). JSON 로그 라인은 그대로 함께 남는다. 프로세스 경계를 넘은 스팬(헤더로만 부모를 아는 경우)은 LangSmith에서 별도 trace로 보인다.
+
+**코드에서 쓰기**
+```python
+from libs.observability.tracing import span, propagate_to_thread
+
+with span("my.step", agreementId=agreement_id) as s:
+    ...
+    s.event("checkpoint", n=3)
+    s.set(outcome="ok")
+
+pool.map(propagate_to_thread(work), items)   # 워커 스레드가 현재 trace를 상속
+```
+
+---
+
+## 개요 (원안)
 
 LangSmith는 LangChain이 만든 **Agent Observability 플랫폼**입니다.
 

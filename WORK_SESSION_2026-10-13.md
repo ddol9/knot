@@ -319,3 +319,48 @@ PR #2 병합(main `0bf46ec`). 새 브랜치에서 레지스트리가 운영 신�
 ### 남은 것 / 다음
 - [ ] Firestore에서 heartbeat → 브랜드 탐색 반영 실측 (복합 인덱스 포함)
 - [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
+
+## 세션 6d (2026-10-14) — 에이전트 트레이싱
+
+캠페인 → 협상 → A2A 메시지 → LLM 호출이 **한 traceId의 스팬 트리**로 남게 했다. 외부 서비스 없이 표준 라이브러리로 `knot.trace` 로거에 JSON 한 줄/스팬. LangSmith는 키가 있고 `langsmith`가 import되면 선택 미러링.
+
+### 추가/변경
+- `libs/observability/tracing.py`(신규) — `span()`/`Span.set/event`, contextvars 전파(`propagate/bind/propagate_to_thread/start_trace`), 프로세스 간 헤더 `X-Trace-Id`/`X-Parent-Span-Id`, `LogSink`(기본)/`LangSmithSink`(선택, 실패 시 경고 1회 후 폴백), 리댁션(`ceiling*`/`min*`/`policy*` 드롭 + `redacted`), `install_logging()`(uvicorn 아래에서 INFO JSON 라인이 stderr로 나가게).
+- `libs/observability/middleware.py` — 요청마다 trace 바인딩(들어온 `X-Trace-Id`/`X-Request-Id` 재사용), 응답 `X-Trace-Id`. `libs/a2a/client.py` — 같은 헤더 전송 → 크리에이터 프로세스의 스팬이 브랜드 `a2a.send` 아래에 붙는다.
+- 계측: `campaign.run` → `campaign.discovery` / `negotiation.run`(워커 스레드 상속) → `a2a.send`·`a2a.cancel` + `turn` 이벤트; 크리에이터 `creator.decide` → `llm.call`(provider/model/fallbackReason/latency만, 프롬프트 없음).
+- traceId 부착: SSE `status`/`campaign_result`, `CampaignResult.traceId`, `BrandNegotiationResult.traceId`, `matchRuns/{id}.traceId`, API `meta.traceId`, 타임라인 `CAMPAIGN_STARTED/COMPLETED`.
+- `Settings.tracing_enabled`(`KNOT_TRACING`) / `tracing_sink`(`KNOT_TRACING_SINK`) / `langsmith_project`.
+- `scripts/trace_tail.py`(신규) — 로그 파일(들)/stdin → traceId별 트리(지속 시간·이벤트·`-f`). 브랜드+크리에이터 로그를 같이 주면 한 트리.
+- 테스트: `tests/test_tracing.py` 10개 + `tests/test_brand_campaign.py` 트리 검증 1개 + `tests/test_api_campaigns.py` traceId 단언. 전체 234 passed / 5 skipped / 6 deselected.
+- ExecPlan `.agent/execplans/12-agent-tracing.md`, `docs/agent_ops/02_langsmith_integration.md` 상단 "실제 구현".
+
+### 실측 (워크트리 코드로 브랜드 :8183 + 크리에이터 :8191, `scripts/a2a_campaign.py --brand-url http://127.0.0.1:8183/brand/v1`)
+```text
+trace dc36e20ed58c46babce99a824c738cf3  13 spans  124 ms  [knot-brand-agent, knot-creator-agent]
+campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2 committedUsdc=1000 budgetUsdc=1300
+  campaign.discovery 79.2 ms ok  queried=6 ranked=6 probed=4 selected=4
+  negotiation.run 13.4 ms ok  creatorAgentId=agent-creator-1 outcome=AGREED rounds=1 finalAmountUsdc=400 agreementId=agreement-d7a1…
+    · turn +0.11 ms  round=1 role=brand type=OFFER amountUsdc=400
+    · turn +13.33 ms  round=1 role=creator type=ACCEPT amountUsdc=400 allowed=True
+    a2a.send 13.1 ms ok  type=OFFER round=1 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+      creator.decide 0.5 ms ok @knot-creator-agent  tenant=agent-creator-1 messageType=OFFER decisionType=ACCEPT violationCodes=[]
+        llm.call 0.0 ms ok @knot-creator-agent  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+  negotiation.run 30.1 ms ok  creatorAgentId=creator-agent-005 outcome=AGREED rounds=2 finalAmountUsdc=600 agreementId=agreement-169f…
+    · turn +0.06 ms  r1 brand OFFER 400 · +12.62 ms r1 creator COUNTER 600 · +15.6 ms r2 brand ACCEPT 600 · +30.01 ms r2 creator ACCEPT 600
+    a2a.send 12.5 ms ok  type=OFFER round=1 replyType=COUNTER taskState=TASK_STATE_INPUT_REQUIRED
+      creator.decide 0.4 ms ok @knot-creator-agent  messageType=OFFER decisionType=COUNTER violationCodes=["CREATOR_MIN_BASE_NOT_MET"]
+        llm.call 0.0 ms ok  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+    a2a.send 14.3 ms ok  type=ACCEPT round=2 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+      creator.decide 0.5 ms ok @knot-creator-agent  messageType=ACCEPT decisionType=ACCEPT violationCodes=[]
+        llm.call 0.0 ms ok  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+```
+
+### 메모
+- 로그 I/O가 GIL을 놓으면서 캠페인 팬아웃의 "목표 도달 후 동시 합의" 경합이 테스트에서 재현됐다(main에서는 5ms GIL 스위치 간격 덕에 안 보였을 뿐). 예산은 장부가 지키고 초과 합의는 설계상 허용. 정확한 합의 수를 단언하는 API 테스트만 `parallelism: 1`로 고정.
+- Starlette는 동기 제너레이터를 스텝마다 다른 컨텍스트 복사본에서 돌린다. 스트림 라우트는 첫 스텝(러너 생성)에만 trace를 바인딩하고, `campaign_event_stream`은 첫 yield 전에 컨텍스트를 캡처해 워커 스레드에 넘긴다.
+- `tests/test_api_promotions.py`의 A2A 헤더 정확 일치 단언 2곳은 trace 헤더를 빼고 비교하도록 바꿨다.
+
+### 남은 것 / 다음
+- [ ] 실제 LangSmith 키로 미러링 확인(가짜 `RunTree`로만 검증)
+- [ ] Cloud Run에서 `jsonPayload.traceId` 필터 실측
+- [ ] 단일 협상 API 경로(`routes.start_negotiation`)도 `negotiation.run` 스팬으로 감싸기(지금은 traceId 헤더만 나간다)
