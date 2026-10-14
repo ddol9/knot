@@ -20,6 +20,7 @@ from libs.agents.negotiation import (
     evaluate_creator_message,
 )
 from libs.domain.models import AgreementResult, AgreementTerms
+from libs.observability.tracing import Span, span
 
 
 class A2ATaskError(ValueError):
@@ -78,7 +79,18 @@ class InMemoryA2ATaskStore:
     def send_message(self, tenant: str, message: A2AMessage) -> A2ATask:
         if message.message_id in self._message_results:
             return self._message_results[message.message_id]
+        with span(
+            "creator.decide",
+            tenant=tenant,
+            contextId=message.context_id,
+            messageId=message.message_id,
+            taskId=message.task_id,
+        ) as decide_span:
+            task = self._decide(tenant, message, decide_span)
+            decide_span.set(taskId=task.id, taskState=task.status.state.value)
+            return task
 
+    def _decide(self, tenant: str, message: A2AMessage, decide_span: Span) -> A2ATask:
         context = self._get_context(tenant)
         task = self._get_or_create_task(message)
         self._validate_message_task_context(task, message)
@@ -86,8 +98,21 @@ class InMemoryA2ATaskStore:
             raise A2ATaskError("terminal tasks do not accept new messages")
 
         payload = _payload_from_message(message)
+        decide_span.set(messageType=payload.type.value, round=payload.round)
         decision = evaluate_creator_message(context, payload)
+        # Decision outcome and rule ids only: thresholds stay private (policy* is redacted).
+        decide_span.set(
+            decisionType=decision.type.value,
+            allowed=decision.policy_decision.allowed,
+            action=decision.policy_decision.action.value,
+            ruleVersion=decision.policy_decision.rule_version,
+            violationCodes=[v.code for v in decision.policy_decision.violations],
+        )
         rationale = self._display_rationale(context, payload, decision)
+        decide_span.set(
+            rationaleProvider=rationale["provider"],
+            rationaleFallbackReason=rationale["fallbackReason"],
+        )
         response = _message_from_decision(
             message,
             task_id=task.id,

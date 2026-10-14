@@ -31,6 +31,7 @@ from libs.a2a.models import (
 from libs.agents.brand import build_initial_terms
 from libs.agents.negotiation import CreatorNegotiationContext
 from libs.domain.models import AgreementTerms, CreatorProfile, Promotion
+from libs.observability.tracing import Span, span
 from libs.policies.brand import validate_brand_terms
 from libs.policies.decision import PolicyDecision, Violation, allow, block
 
@@ -103,6 +104,8 @@ class BrandNegotiationResult(BaseModel):
     terms_hash: str | None = Field(default=None, alias="termsHash")
     terms: AgreementTerms | None = None
     turns: list[NegotiationTurn] = Field(default_factory=list)
+    # Correlates this negotiation with the `knot.trace` span tree (negotiation.run).
+    trace_id: str | None = Field(default=None, alias="traceId")
 
 
 class BrandNegotiator:
@@ -134,8 +137,35 @@ class BrandNegotiator:
         self._should_stop = should_stop
         self._committed_usdc_provider = committed_usdc_provider
         self._max_rounds = strategy.max_rounds or promotion.autonomy.max_negotiation_rounds
+        self._span: Span | None = None
 
     def run(self) -> BrandNegotiationResult:
+        with span(
+            "negotiation.run",
+            brandAgentId=self._promotion.brand_agent_id,
+            creatorAgentId=self._creator_agent_id,
+            promotionId=self._promotion.promotion_id,
+            contextId=self._context_id,
+            maxRounds=self._max_rounds,
+        ) as run_span:
+            self._span = run_span
+            try:
+                result = self._run()
+            finally:
+                self._span = None
+            run_span.set(
+                outcome=result.outcome,
+                rounds=result.rounds,
+                finalAmountUsdc=result.final_amount_usdc,
+                agreementId=result.agreement_id,
+                taskId=result.task_id,
+                taskState=result.task_state,
+                turns=len(result.turns),
+            )
+            result.trace_id = run_span.trace_id
+            return result
+
+    def _run(self) -> BrandNegotiationResult:
         promotion = self._promotion
         strategy = self._strategy
         turns: list[NegotiationTurn] = []
@@ -266,15 +296,46 @@ class BrandNegotiator:
             metadata["creatorNegotiationContext"] = self._creator_context.model_dump(
                 by_alias=True, mode="json"
             )
-        return self._transport.send_message(self._creator_agent_id, message, metadata=metadata)
+        data = message.parts[0].data or {}
+        with span(
+            "a2a.send",
+            creatorAgentId=self._creator_agent_id,
+            type=data.get("type"),
+            round=data.get("round"),
+            messageId=message.message_id,
+            taskId=message.task_id,
+        ) as send_span:
+            task = self._transport.send_message(self._creator_agent_id, message, metadata=metadata)
+            reply = first_part_data(task.status.message) if task.status.message else {}
+            send_span.set(
+                taskId=task.id, taskState=task.status.state.value, replyType=reply.get("type")
+            )
+            return task
 
     def _cancel(self, task_id: str | None) -> A2ATask | None:
         if task_id is None:
             return None
-        try:
-            return self._transport.cancel_task(task_id)
-        except CreatorA2AClientError:
-            return None
+        with span("a2a.cancel", creatorAgentId=self._creator_agent_id, taskId=task_id) as s:
+            try:
+                task = self._transport.cancel_task(task_id)
+            except CreatorA2AClientError as exc:
+                s.set(cancelError=str(exc)[:200])
+                return None
+            s.set(taskState=task.status.state.value)
+            return task
+
+    def _trace_turn(self, turn: NegotiationTurn) -> None:
+        if self._span is None:
+            return
+        self._span.event(
+            "turn",
+            round=turn.round,
+            role=turn.role,
+            type=turn.type.value,
+            amountUsdc=turn.amount_usdc,
+            messageProvider=turn.message_provider,
+            allowed=(turn.policy_decision or {}).get("allowed"),
+        )
 
     def _brand_policy(self, terms: AgreementTerms, round_: int) -> PolicyDecision:
         committed = self._committed_usdc_provider() if self._committed_usdc_provider else 0
@@ -377,7 +438,7 @@ class BrandNegotiator:
         terms: AgreementTerms,
         decision: PolicyDecision | None,
     ) -> NegotiationTurn:
-        return NegotiationTurn(
+        turn = NegotiationTurn(
             round=round_,
             role=role,
             type=outgoing.payload.type,
@@ -390,6 +451,8 @@ class BrandNegotiator:
             taskId=outgoing.message.task_id,
             policyDecision=decision.model_dump(by_alias=True, mode="json") if decision else None,
         )
+        self._trace_turn(turn)
+        return turn
 
     def _read_creator_reply(
         self, task: A2ATask, round_: int
@@ -421,6 +484,7 @@ class BrandNegotiator:
             taskId=task.id,
             policyDecision=policy if isinstance(policy, dict) else None,
         )
+        self._trace_turn(turn)
         return turn, creator_terms, creator_type
 
 

@@ -308,9 +308,9 @@ def test_match_run_start_is_idempotent_and_records_canonical_events() -> None:
         "COMPLETED",
     ]
 
-    events = client.get(f"/api/v1/match-runs/{first_run['matchRunId']}/events").json()[
-        "data"
-    ]["events"]
+    events = client.get(f"/api/v1/match-runs/{first_run['matchRunId']}/events").json()["data"][
+        "events"
+    ]
     assert [event["type"] for event in events] == [
         "MATCH_RUN_READY",
         "MATCH_RUN_DISCOVERING",
@@ -663,9 +663,7 @@ def test_run_match_normalizes_korean_fashion_product_aliases() -> None:
             "availability": "AVAILABLE",
         },
     )
-    discovery = repository.get_raw_document(
-        FirestorePaths.creator_discovery_profile("creator-003")
-    )
+    discovery = repository.get_raw_document(FirestorePaths.creator_discovery_profile("creator-003"))
     assert discovery is not None
     repository.save_raw_document(
         FirestorePaths.creator_discovery_profile("creator-003"),
@@ -696,9 +694,7 @@ def test_run_match_normalizes_korean_fashion_product_aliases() -> None:
     }
     assert client.post("/api/v1/promotions", json=payload).status_code == 201
 
-    run_response = client.post(
-        "/api/v1/promotions/promotion-korean-fashion-sleeveless/matches:run"
-    )
+    run_response = client.post("/api/v1/promotions/promotion-korean-fashion-sleeveless/matches:run")
 
     assert run_response.status_code == 201
     match_run = run_response.json()["data"]["matchRun"]
@@ -721,9 +717,9 @@ def test_start_negotiation_reports_no_eligible_creator() -> None:
         "constraints": {"requiredCategories": ["도박"], "requiredDisclosures": ["ad"]},
     }
     assert client.post("/api/v1/promotions", json=payload).status_code == 201
-    match_run = client.post("/api/v1/promotions/promotion-no-eligible/matches:run").json()[
-        "data"
-    ]["matchRun"]
+    match_run = client.post("/api/v1/promotions/promotion-no-eligible/matches:run").json()["data"][
+        "matchRun"
+    ]
     assert match_run["status"] == "WAITING_FOR_CREATOR"
     assert match_run["selectedCreatorAgentId"] is None
     assert match_run["stateHistory"] == [
@@ -834,9 +830,7 @@ def test_start_negotiation_persists_messages_events_and_agreement() -> None:
         lock_amount_base_units(AgreementTerms.model_validate(agreement["terms"]))
     )
 
-    negotiation_agreement_response = client.get(
-        f"/api/v1/negotiations/{negotiation_id}/agreement"
-    )
+    negotiation_agreement_response = client.get(f"/api/v1/negotiations/{negotiation_id}/agreement")
     assert negotiation_agreement_response.status_code == 200
     assert (
         negotiation_agreement_response.json()["data"]["agreement"]["agreementId"]
@@ -874,8 +868,7 @@ def test_start_negotiation_uses_saved_initial_offer_for_counter_flow() -> None:
         "ACCEPT",
     ]
     assert [
-        message["payload"]["terms"]["compensation"]["baseAmountUsdc"]
-        for message in messages
+        message["payload"]["terms"]["compensation"]["baseAmountUsdc"] for message in messages
     ] == [300, 650, 475, 650, 650, 650]
     assert all(isinstance(message["payload"].get("display"), dict) for message in messages)
 
@@ -947,9 +940,7 @@ def test_agreement_document_rejects_artifact_terms_hash_mismatch() -> None:
             }
         ],
         "usageRights": "organicOnly",
-        "milestones": [
-            {"id": "content", "trigger": "contentLiveVerified", "releasePct": 100}
-        ],
+        "milestones": [{"id": "content", "trigger": "contentLiveVerified", "releasePct": 100}],
         "constraints": {"requiredDisclosures": ["ad"], "prohibitedClaims": []},
     }
 
@@ -1099,9 +1090,17 @@ def test_start_negotiation_uses_creator_a2a_http_when_configured(monkeypatch) ->
     assert captured["agent_card_url"] == (
         "http://creator-agent.test/a2a/v1/.well-known/agent-card.json"
     )
-    assert captured["agent_card_headers"] == {"A2A-Version": "1.0"}
+    # The A2A client also carries the request trace (X-Trace-Id, X-Parent-Span-Id) so the
+    # creator agent's spans join the same trace; those are asserted loosely here.
+    card_headers = dict(captured["agent_card_headers"])  # type: ignore[call-overload]
+    assert card_headers.pop("X-Trace-Id", None)
+    card_headers.pop("X-Parent-Span-Id", None)
+    assert card_headers == {"A2A-Version": "1.0"}
     assert captured["url"] == "http://creator-agent.test/a2a/v1/message:send"
-    assert captured["headers"] == {
+    send_headers = dict(captured["headers"])  # type: ignore[call-overload]
+    assert send_headers.pop("X-Trace-Id", None) == response.headers["X-Trace-Id"]
+    send_headers.pop("X-Parent-Span-Id", None)  # only present when sent from inside a span
+    assert send_headers == {
         "A2A-Version": "1.0",
         "Content-Type": "application/a2a+json",
     }
@@ -1186,7 +1185,9 @@ def test_start_negotiation_counter_a2a_task_continues_with_brand_accept(monkeypa
             headers: dict[str, str],
         ) -> object:
             assert url == "http://creator-agent.test/a2a/v1/.well-known/agent-card.json"
-            assert headers == {"A2A-Version": "1.0"}
+            assert {k: v for k, v in headers.items() if not k.startswith("X-")} == {
+                "A2A-Version": "1.0"
+            }
             return FakeHttpResponse(
                 {
                     "name": "KNOT Creator Negotiation Agent",

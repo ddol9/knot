@@ -40,6 +40,14 @@ from libs.agents.brand_negotiator import (
     NegotiationTurn,
 )
 from libs.domain.models import CreatorProfile, Promotion
+from libs.observability.tracing import (
+    TraceContext,
+    bind,
+    current_context,
+    new_trace_id,
+    propagate_to_thread,
+    span,
+)
 from libs.policies.governance import GovernanceDecision, GovernanceRules, evaluate_settlement
 from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
@@ -103,6 +111,8 @@ class CampaignResult(BaseModel):
     agreement_ids: list[str] = Field(default_factory=list, alias="agreementIds")
     discovery: DiscoveryReport
     negotiations: list[CandidateNegotiation]
+    # Correlates this campaign with the `knot.trace` span tree (campaign.run).
+    trace_id: str | None = Field(default=None, alias="traceId")
 
 
 class BudgetLedger:
@@ -232,24 +242,73 @@ class CampaignRunner:
         self._stop = threading.Event()
         self._creator_id_by_agent: dict[str, str] = {}
         self._agreement_ids: list[str] = []
+        # Fixed at construction so the SSE `status` event can announce it before run().
+        context = current_context()
+        self._trace_id = context.trace_id if context else new_trace_id()
 
     @property
     def campaign_id(self) -> str:
         return self._campaign_id
 
+    @property
+    def trace_id(self) -> str:
+        return self._trace_id
+
     def run(self) -> CampaignResult:
+        context = current_context()
+        if context is None or context.trace_id != self._trace_id:
+            context = TraceContext(trace_id=self._trace_id)
+        promotion, strategy = self._promotion, self._strategy
+        with (
+            bind(context),
+            span(
+                "campaign.run",
+                campaignId=self._campaign_id,
+                matchRunId=self._match_run_id,
+                promotionId=promotion.promotion_id,
+                brandAgentId=promotion.brand_agent_id,
+                targetCreatorCount=strategy.target_creator_count,
+                budgetUsdc=promotion.budget.total_usdc,
+                openingAmountUsdc=strategy.opening_amount_usdc,
+                parallelism=strategy.parallelism,
+            ) as run_span,
+        ):
+            result = self._run()
+            run_span.set(
+                outcome=result.outcome,
+                agreedCount=result.agreed_count,
+                committedUsdc=result.committed_usdc,
+                agreementIds=list(result.agreement_ids),
+                negotiations=[
+                    {"creatorAgentId": n.creator_agent_id, "status": n.status}
+                    for n in result.negotiations
+                ],
+            )
+            return result
+
+    def _run(self) -> CampaignResult:
         promotion, strategy = self._promotion, self._strategy
         ledger = BudgetLedger(promotion.budget.total_usdc)
 
-        report, profiles = discover_creator_agents(
-            self._repository,
-            promotion,
-            limit=strategy.max_candidates,
-            default_base_url=self._default_base_url,
-            endpoint_overrides=self._endpoint_overrides,
-            card_probe=self._probe if self._probe_cards else None,
-            governance=self._governance,
-        )
+        with span(
+            "campaign.discovery", maxCandidates=strategy.max_candidates, probe=self._probe_cards
+        ) as discovery_span:
+            report, profiles = discover_creator_agents(
+                self._repository,
+                promotion,
+                limit=strategy.max_candidates,
+                default_base_url=self._default_base_url,
+                endpoint_overrides=self._endpoint_overrides,
+                card_probe=self._probe if self._probe_cards else None,
+                governance=self._governance,
+            )
+            discovery_span.set(
+                queried=report.queried,
+                ranked=report.ranked,
+                probed=report.probed,
+                selected=len(report.selected),
+                selectedAgentIds=[c.creator_agent_id for c in report.selected],
+            )
         self._emit("discovery", data={"report": report.model_dump(by_alias=True, mode="json")})
         self._persist_match_run(report)
 
@@ -372,7 +431,12 @@ class CampaignRunner:
                 self._persist_candidate(negotiation)
 
         with ThreadPoolExecutor(max_workers=strategy.parallelism) as pool:
-            list(pool.map(work, [by_id[n.creator_agent_id] for n in negotiations]))
+            # Worker threads inherit the campaign span so negotiation.run nests under it.
+            list(
+                pool.map(
+                    propagate_to_thread(work), [by_id[n.creator_agent_id] for n in negotiations]
+                )
+            )
 
         if self._agreed >= strategy.target_creator_count:
             outcome: CampaignOutcome = "TARGET_REACHED"
@@ -565,16 +629,22 @@ class CampaignRunner:
             agreementIds=list(self._agreement_ids),
             discovery=report,
             negotiations=negotiations,
+            traceId=self._trace_id,
         )
         first_agreed = next((n for n in negotiations if n.agreement_id), None)
         self._emit(
-            "campaign_result", data={"result": result.model_dump(by_alias=True, mode="json")}
+            "campaign_result",
+            data={
+                "result": result.model_dump(by_alias=True, mode="json"),
+                "traceId": self._trace_id,
+            },
         )
         self._repository.save_raw_document(
             FirestorePaths.match_run(self._match_run_id),
             {
                 "matchRunId": self._match_run_id,
                 "campaignId": self._campaign_id,
+                "traceId": self._trace_id,
                 "promotionId": self._promotion.promotion_id,
                 # docs/07 vocabulary for the product; the campaign outcome sits beside it.
                 "status": "AGREED" if self._agreed > 0 else "EXHAUSTED",
@@ -600,6 +670,7 @@ class CampaignRunner:
             {
                 "matchRunId": self._match_run_id,
                 "campaignId": self._campaign_id,
+                "traceId": self._trace_id,
                 "promotionId": self._promotion.promotion_id,
                 "status": "NEGOTIATING",
                 "queried": report.queried,

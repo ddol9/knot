@@ -42,6 +42,11 @@ def test_campaign_creates_agreements_and_locks_escrow_for_each(monkeypatch) -> N
     data = response.json()["data"]
     campaign, agreements = data["campaign"], data["agreements"]
 
+    # One trace id correlates the response, the request and the match run (knot.trace).
+    trace_id = response.json()["meta"]["traceId"]
+    assert trace_id and campaign["traceId"] == trace_id == response.headers["X-Trace-Id"]
+    assert all(n["result"]["traceId"] == trace_id for n in campaign["negotiations"] if n["result"])
+
     assert campaign["outcome"] == "TARGET_REACHED"
     assert campaign["agreedCount"] == 2
     assert len(agreements) == 2
@@ -90,6 +95,7 @@ def test_campaign_creates_agreements_and_locks_escrow_for_each(monkeypatch) -> N
     assert run_doc is not None
     assert run_doc["status"] == "AGREED"
     assert run_doc["campaignOutcome"] == "TARGET_REACHED"
+    assert run_doc["traceId"] == trace_id
     assert run_doc["selectedCreatorAgentId"] in {n["creatorAgentId"] for n in agreed}
     candidates = repository.list_raw_documents(
         f"{COLLECTIONS.match_runs}/{campaign['matchRunId']}/candidates"
@@ -108,9 +114,17 @@ def test_campaign_skips_escrow_when_auto_escrow_is_off() -> None:
             update={"autonomy": promotion.autonomy.model_copy(update={"auto_escrow": False})}
         )
     )
+    # parallelism 1: with fan-out, two creators can both accept before the target stop
+    # flag is set (the stop is checked between A2A sends), which would make the exact
+    # count below timing-dependent.
     response = client.post(
         "/api/v1/promotions/promotion-001/campaigns",
-        json={"targetCreatorCount": 1, "openingAmountUsdc": 400, "ceilingUsdc": 700},
+        json={
+            "targetCreatorCount": 1,
+            "openingAmountUsdc": 400,
+            "ceilingUsdc": 700,
+            "parallelism": 1,
+        },
     )
     assert response.status_code == 201, response.text
     campaign = response.json()["data"]["campaign"]
@@ -174,6 +188,11 @@ def test_campaign_stream_emits_agreement_and_escrow_events() -> None:
                 event, payload = None, ""
     names = [e for e, _ in events]
     assert names[0] == "status" and names[1] == "discovery" and names[-1] == "campaign_result"
+    # The stream announces the trace id up front and the final payload repeats it.
+    status_trace = events[0][1]["traceId"]
+    assert status_trace == response.headers["X-Trace-Id"]
+    assert events[-1][1]["traceId"] == status_trace
+    assert events[-1][1]["result"]["traceId"] == status_trace
     assert "agreement_created" in names
     assert names.index("agreement_created") < names.index("escrow_skipped")
     created = next(d for e, d in events if e == "agreement_created")

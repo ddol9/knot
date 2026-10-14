@@ -14,6 +14,7 @@ from libs.agents.demo_context import demo_creator_contexts
 from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import creator_rationale
 from libs.observability.middleware import add_request_context
+from libs.observability.tracing import install_logging
 from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
 
@@ -26,6 +27,7 @@ def create_app(
     repository: KnotRepository | None = None,
 ) -> FastAPI:
     settings = settings or get_settings(service_name="knot-creator-agent")
+    install_logging(settings)
     app = FastAPI(title="KNOT Creator Agent", version=settings.schema_version)
     add_request_context(app, service_name=settings.service_name)
     if repository is None and task_store is None:
