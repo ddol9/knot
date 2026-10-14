@@ -248,6 +248,12 @@ function AgentRunPanel({
             {running ? "크리에이터 탐색 중…" : "크리에이터 탐색·협상 시작"}
           </button>
         )}
+        <Link
+          href={`/brand/campaign?promotionId=${encodeURIComponent(promotion.promotionId)}`}
+          className="sketch-pill border border-border-subtle px-4 py-2"
+        >
+          여러 크리에이터와 동시 협상
+        </Link>
       </div>
       {waitingMessage ? <p className="mt-3 text-sm text-muted">{waitingMessage}</p> : null}
       {runError ? <p className="mt-3 text-sm text-negative">{runError}</p> : null}
