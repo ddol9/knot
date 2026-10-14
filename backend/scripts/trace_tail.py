@@ -30,8 +30,11 @@ RESET = "\033[0m"
 SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
     "campaign.run": ("campaignId", "outcome", "agreedCount", "committedUsdc", "budgetUsdc"),
     "campaign.discovery": ("queried", "ranked", "probed", "selected"),
+    "match.run": ("promotionId", "queried", "ranked", "selected", "verificationStatus"),
+    "match.verify": ("provider", "mode", "status", "continuation", "amountUsdc"),
     "negotiation.run": ("creatorAgentId", "outcome", "rounds", "finalAmountUsdc", "agreementId"),
     "a2a.send": ("type", "round", "replyType", "taskState"),
+    "a2a.agent_card": ("mode", "discovered", "name", "version"),
     "a2a.cancel": ("taskState",),
     "creator.decide": ("tenant", "messageType", "decisionType", "violationCodes", "taskState"),
     "llm.call": ("purpose", "provider", "model", "fallbackReason"),

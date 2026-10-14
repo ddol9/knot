@@ -7,7 +7,7 @@
 ## 실제 구현 (2026-10-14) — `libs/observability/tracing.py`
 
 아래 설계안(`@traceable`, LangGraph)과 달리, 실제 코드는 **외부 의존성 없는 작은 트레이서**를 쓰고 LangSmith는 선택 싱크다.
-ExecPlan: `.agent/execplans/12-agent-tracing.md`.
+ExecPlan: `.agent/execplans/12-agent-tracing.md`(캠페인 경로), `.agent/execplans/15-single-negotiation-tracing.md`(프로덕트 API 단일 협상 경로).
 
 **무엇이 찍히나** — 스팬이 끝날 때마다 로거 `knot.trace`에 JSON 한 줄:
 `{"traceId","spanId","parentSpanId","name","durationMs","status":"ok|error","error"?,"attrs","events"?,"redacted"?,"startedAt","service"}`
@@ -16,15 +16,18 @@ ExecPlan: `.agent/execplans/12-agent-tracing.md`.
 |---|---|---|
 | `campaign.run` | `CampaignRunner.run` | campaignId, matchRunId, promotionId, targetCreatorCount, budgetUsdc → outcome, agreedCount, committedUsdc, agreementIds |
 | `campaign.discovery` | 탐색 | queried, ranked, probed, selected, selectedAgentIds |
-| `negotiation.run` | `BrandNegotiator.run` (워커 스레드도 캠페인 trace 상속) | creatorAgentId, contextId → outcome, rounds, finalAmountUsdc, agreementId, taskState; `turn` 이벤트(round/role/type/amountUsdc/allowed) |
-| `a2a.send` / `a2a.cancel` | 브랜드 → 크리에이터 메시지 | type, round, messageId → taskId, taskState, replyType |
+| `match.run` | `routes.run_matches` (`POST /promotions/{id}/matches:run`) | promotionId, matchRunId → queried, ranked, eligible, selected, selectedCreatorAgentId, verificationMode, verificationStatus |
+| `match.verify` | `routes._traced_paid_verification` (pay.sh 모드가 켜져 있을 때만) | provider, protocol, mode → status, continuation, idempotencyReused, amountUsdc (영수증·지갑은 기록하지 않음) |
+| `negotiation.run` | `BrandNegotiator.run` (워커 스레드도 캠페인 trace 상속) **및** `routes.start_negotiation` (`POST /match-runs/{id}:start-negotiation`, 요청마다 루트) | creatorAgentId, contextId → outcome, rounds, finalAmountUsdc, agreementId, taskState, turns; `turn` 이벤트(round/role/type/amountUsdc/messageProvider/allowed — 브랜드 턴은 전송 전, 크리에이터 턴은 응답 파싱 직후) |
+| `a2a.agent_card` | `routes._discover_creator_agent_card` | mode, baseUrl → discovered, name, version, skillCount (로컬 모드는 `discovered=False`) |
+| `a2a.send` / `a2a.cancel` | 브랜드 → 크리에이터 메시지 (`BrandNegotiator._send`, `routes._send_creator_a2a_task`) | type, round, messageId → taskId, taskState, replyType |
 | `creator.decide` | `InMemoryA2ATaskStore.send_message` (크리에이터 프로세스) | tenant, messageType, round → decisionType, action, violationCodes, rationaleProvider |
 | `llm.call` | `libs/ai/gemini._generate_json` | purpose, provider, model, mode → fallbackReason (프롬프트·응답 본문은 기록하지 않음) |
 
 `ceiling*`, `min*`, `policy*` 속성은 트레이서가 드롭하고 `redacted`에 키만 남긴다(비공개 협상 상태 보호).
 
 **상관 id** — 미들웨어가 요청마다 trace를 바인딩(`X-Trace-Id`/`X-Request-Id` 재사용, 응답 `X-Trace-Id`), A2A 클라이언트가 `X-Trace-Id`/`X-Parent-Span-Id`를 보내므로 크리에이터 프로세스의 `creator.decide`가 브랜드의 `a2a.send` 아래에 붙는다.
-`traceId`는 SSE `status`/`campaign_result`, `CampaignResult.traceId`, `BrandNegotiationResult.traceId`, `matchRuns/{id}.traceId`, API `meta.traceId`에 들어간다.
+`traceId`는 SSE `status`/`campaign_result`, `CampaignResult.traceId`, `BrandNegotiationResult.traceId`, `matchRuns/{id}.traceId`, `negotiations/{id}.traceId`(단일 협상 경로), API `meta.traceId`(캠페인·매치 런·단일 협상 응답 모두 = 응답 헤더 `X-Trace-Id`)에 들어간다.
 
 **보기**
 ```bash
@@ -33,6 +36,7 @@ cd backend
 python scripts/trace_tail.py /tmp/knot-local/brand-agent.log                       # 브랜드 쪽 트리
 python scripts/trace_tail.py /tmp/knot-local/brand-agent.log /tmp/knot-local/creator-a.log   # 크리에이터 스팬까지 합친 트리
 python scripts/trace_tail.py -f /tmp/knot-local/brand-agent.log                    # 따라가기
+python scripts/trace_tail.py /tmp/knot-local/api-trace.log                         # 프로덕트 API(matches:run / start-negotiation) 트리
 ```
 Cloud Run에서는 stderr의 JSON 라인이 Cloud Logging에 구조화되어 들어가므로 `jsonPayload.traceId="..."`로 필터하면 된다.
 
