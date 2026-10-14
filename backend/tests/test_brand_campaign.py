@@ -7,6 +7,7 @@ brand service's campaign stream against them.
 """
 
 import json
+import logging
 import socket
 import threading
 import time
@@ -192,6 +193,57 @@ def test_campaign_reaches_target_within_budget_and_skips_the_rest() -> None:
     candidates = repository.list_raw_documents(f"matchRuns/{result.match_run_id}/candidates")
     assert len(candidates) == len(result.discovery.candidates)
     assert any(c.get("outcome") == "AGREED" for c in candidates)
+
+
+def test_campaign_emits_one_trace_tree_across_negotiation_threads(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="knot.trace")
+    result, _, repository, _ = _run_campaign(total=1300, target=2)
+
+    records = [json.loads(r.getMessage()) for r in caplog.records if r.name == "knot.trace"]
+    by_name: dict[str, list[dict]] = {}
+    for record in records:
+        by_name.setdefault(record["name"], []).append(record)
+    (campaign,) = by_name["campaign.run"]
+    assert campaign["traceId"] == result.trace_id
+    assert campaign["parentSpanId"] is None
+    assert campaign["attrs"]["outcome"] == "TARGET_REACHED"
+    # Every span of the campaign (worker threads included) shares the campaign's traceId.
+    assert {r["traceId"] for r in records} == {result.trace_id}
+    (discovery,) = by_name["campaign.discovery"]
+    assert discovery["parentSpanId"] == campaign["spanId"]
+    assert discovery["attrs"]["selected"] == len(result.discovery.selected)
+    negotiations = by_name["negotiation.run"]
+    started = [n for n in result.negotiations if n.status == "DONE"]
+    assert len(negotiations) == len(started) >= 2
+    assert {n["parentSpanId"] for n in negotiations} == {campaign["spanId"]}
+    assert {n["attrs"]["creatorAgentId"] for n in negotiations} == {
+        n.creator_agent_id for n in started
+    }
+    for negotiation in negotiations:
+        assert negotiation["traceId"] == result.trace_id
+        assert [e["name"] for e in negotiation["events"]][:2] == ["turn", "turn"]
+        candidate = next(
+            n for n in started if n.creator_agent_id == negotiation["attrs"]["creatorAgentId"]
+        )
+        assert negotiation["attrs"]["outcome"] == candidate.result.outcome
+        assert candidate.result.trace_id == result.trace_id
+    # A2A messages nest under their negotiation, creator decisions under the message.
+    negotiation_ids = {n["spanId"] for n in negotiations}
+    sends = by_name["a2a.send"]
+    assert sends and {s["parentSpanId"] for s in sends} <= negotiation_ids
+    decides = by_name["creator.decide"]
+    assert decides and {d["parentSpanId"] for d in decides} <= {s["spanId"] for s in sends}
+    assert {d["attrs"]["decisionType"] for d in decides} >= {"ACCEPT"}
+    # No LLM provider is wired in this in-process run, so no llm.call spans; if one is
+    # ever added it must hang under a creator decision or a negotiation.
+    llm_parents = {d["spanId"] for d in decides} | negotiation_ids
+    assert all(c["parentSpanId"] in llm_parents for c in by_name.get("llm.call", []))
+    # Private negotiation state never reaches the trace log.
+    joined = "\n".join(r.getMessage() for r in caplog.records if r.name == "knot.trace")
+    assert "ceiling" not in joined.lower() and '"policy' not in joined.lower()
+    # The match run document is correlated with the same trace.
+    run_doc = repository.get_raw_document(f"matchRuns/{result.match_run_id}")
+    assert run_doc and run_doc["traceId"] == result.trace_id
 
 
 def test_campaign_budget_too_small_for_any_ceiling_reports_no_agreement() -> None:

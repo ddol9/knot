@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from html import unescape as html_unescape
+from itertools import chain
 from subprocess import TimeoutExpired
 from typing import cast
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
@@ -121,6 +122,7 @@ from libs.domain.models import (
     RateCard,
     UsageRights,
 )
+from libs.observability.tracing import current_trace_id, new_trace_id, start_trace
 from libs.payments.paysh import PayCliNotFound, PayShError, verify_content
 from libs.payments.paysh import fetch as fetch_paysh
 from libs.payments.settlement import (
@@ -2204,14 +2206,17 @@ def build_api_router(
     def run_campaign(
         promotion_id: str, request: PromotionCampaignRequest | None = None
     ) -> dict[str, object]:
-        runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type="CAMPAIGN_STARTED",
-            data={"campaignId": runner.campaign_id},
-        )
-        result = runner.run()
+        # One trace per campaign request: the middleware's request trace id when present.
+        trace_id = current_trace_id() or new_trace_id()
+        with start_trace(trace_id):
+            runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
+            _append_promotion_event(
+                repository,
+                promotion_id=promotion_id,
+                event_type="CAMPAIGN_STARTED",
+                data={"campaignId": runner.campaign_id, "traceId": runner.trace_id},
+            )
+            result = runner.run()
         agreements = [
             document
             for agreement_id in result.agreement_ids
@@ -2227,14 +2232,17 @@ def build_api_router(
                 "outcome": result.outcome,
                 "agreedCount": result.agreed_count,
                 "committedUsdc": result.committed_usdc,
+                "traceId": result.trace_id,
             },
         )
-        return _ok(
+        response = _ok(
             {
                 "campaign": result.model_dump(by_alias=True, mode="json"),
                 "agreements": agreements,
             }
         )
+        cast(dict[str, object], response["meta"])["traceId"] = result.trace_id
+        return response
 
     @router.get("/promotions/{promotion_id}/campaigns/stream")
     def stream_campaign(
@@ -2257,13 +2265,20 @@ def build_api_router(
             maxRounds=maxRounds,
         )
         _get_promotion(repository, promotion_id)  # 404 before the stream opens
+        # Captured here: the body generator may run outside the request's context.
+        trace_id = current_trace_id() or new_trace_id()
 
         def events() -> Iterator[str]:
-            stream = campaign_event_stream(
-                lambda on_event: _campaign_runner(promotion_id, request, on_event),
-                status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
-            )
-            for event, data in stream:
+            # Starlette steps a sync generator in a fresh context copy per `next()`, so the
+            # trace is bound only around the first step, where the runner (and its worker
+            # thread's context) is created; later steps only forward events.
+            with start_trace(trace_id):
+                stream = campaign_event_stream(
+                    lambda on_event: _campaign_runner(promotion_id, request, on_event),
+                    status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
+                )
+                first = next(stream)
+            for event, data in chain([first], stream):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(

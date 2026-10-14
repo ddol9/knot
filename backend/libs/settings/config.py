@@ -4,6 +4,12 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from libs.observability.tracing import (
+    langsmith_project_from_env,
+    tracing_enabled_from_env,
+    tracing_sink_from_env,
+)
+
 
 def _load_dotenv() -> None:
     env_file = Path(__file__).resolve().parents[3] / ".env"
@@ -94,6 +100,11 @@ class Settings(BaseModel):
     # >= 1000 USDC: 사람 서명 필요
     dev_admin_enabled: bool = False
     dev_admin_allowlist: list[str] = []
+    # Agent tracing (libs/observability/tracing.py): JSON lines on logger `knot.trace`,
+    # optionally mirrored to LangSmith when LANGSMITH_API_KEY/LANGCHAIN_API_KEY is set.
+    tracing_enabled: bool = True
+    tracing_sink: str = "log"  # log | langsmith
+    langsmith_project: str = "knot-agent-ops"
 
 
 @lru_cache
@@ -177,6 +188,9 @@ def get_settings(service_name: str | None = None) -> Settings:
         ),
         dev_admin_enabled=_truthy(os.getenv("KNOT_DEV_ADMIN_ENABLED")),
         dev_admin_allowlist=_csv(os.getenv("KNOT_DEV_ADMIN_ALLOWLIST")),
+        tracing_enabled=tracing_enabled_from_env(),
+        tracing_sink=tracing_sink_from_env(),
+        langsmith_project=langsmith_project_from_env(),
     )
 
 
