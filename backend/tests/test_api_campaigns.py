@@ -205,3 +205,78 @@ def test_campaign_unknown_promotion_is_404() -> None:
     client, _ = _seeded()
     assert client.post("/api/v1/promotions/nope/campaigns", json={}).status_code == 404
     assert client.get("/api/v1/promotions/nope/campaigns/stream").status_code == 404
+
+
+# --- fan-out limits and cancellation -------------------------------------------------
+
+
+def test_parallel_fan_out_never_agrees_past_the_target() -> None:
+    # Every beauty creator accepts 800 at once, so without target slots three parallel
+    # negotiations could all agree before the stop flag is seen.
+    client, _ = _seeded()
+    for _ in range(4):
+        response = client.post(
+            "/api/v1/promotions/promotion-001/campaigns",
+            json={"targetCreatorCount": 1, "parallelism": 3, "openingAmountUsdc": 800},
+        )
+        assert response.status_code == 201, response.text
+        campaign = response.json()["data"]["campaign"]
+        assert campaign["agreedCount"] == 1, campaign["negotiations"]
+        assert campaign["outcome"] == "TARGET_REACHED"
+        skipped = {n["skipReason"] for n in campaign["negotiations"] if n["status"] == "SKIPPED"}
+        assert skipped <= {"TARGET_REACHED"}
+
+
+def test_cancel_campaign_stops_it_and_blocks_a_second_run(monkeypatch) -> None:
+    import threading
+
+    from libs.agents import brand_campaign
+
+    client, _ = _seeded()
+    started, release = threading.Event(), threading.Event()
+    original_run = brand_campaign.CampaignRunner.run
+
+    def gated_run(self):  # type: ignore[no-untyped-def]
+        started.set()
+        assert release.wait(5)
+        return original_run(self)
+
+    monkeypatch.setattr(brand_campaign.CampaignRunner, "run", gated_run)
+    results: dict[str, object] = {}
+
+    def run_first() -> None:
+        results["response"] = client.post(
+            "/api/v1/promotions/promotion-001/campaigns", json={"targetCreatorCount": 2}
+        )
+
+    worker = threading.Thread(target=run_first)
+    worker.start()
+    assert started.wait(5)
+
+    # A second campaign for the same promotion is refused while one is running.
+    second = client.post("/api/v1/promotions/promotion-001/campaigns", json={})
+    assert second.status_code == 409
+    assert second.json()["detail"]["code"] == "CAMPAIGN_ALREADY_RUNNING"
+    stream = client.get("/api/v1/promotions/promotion-001/campaigns/stream")
+    assert stream.status_code == 409
+
+    campaign_id = second.json()["detail"]["detail"].split()[1]
+    assert client.post("/api/v1/promotions/promotion-001/campaigns/nope:cancel").status_code == 404
+    cancel = client.post(f"/api/v1/promotions/promotion-001/campaigns/{campaign_id}:cancel")
+    assert cancel.status_code == 200
+    assert cancel.json()["data"] == {"campaignId": campaign_id, "status": "CANCELING"}
+
+    release.set()
+    worker.join(10)
+    first = results["response"]
+    assert first.status_code == 201, first.text  # type: ignore[union-attr]
+    campaign = first.json()["data"]["campaign"]  # type: ignore[union-attr]
+    assert campaign["campaignId"] == campaign_id
+    assert campaign["outcome"] == "CANCELED"
+    assert campaign["agreedCount"] == 0
+    assert {n["skipReason"] for n in campaign["negotiations"]} == {"CANCELED"}
+    assert "CAMPAIGN_CANCEL_REQUESTED" in _timeline_types(client, "promotion-001")
+
+    # Finished campaigns free the slot for the promotion.
+    again = client.post("/api/v1/promotions/promotion-001/campaigns", json={})
+    assert again.status_code == 201

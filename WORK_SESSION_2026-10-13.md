@@ -466,3 +466,17 @@ campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2
 - [ ] 실제 LangSmith 키로 미러링 확인(가짜 `RunTree`로만 검증)
 - [ ] Cloud Run에서 `jsonPayload.traceId` 필터 실측
 - [ ] 단일 협상 API 경로(`routes.start_negotiation`)도 `negotiation.run` 스팬으로 감싸기(지금은 traceId 헤더만 나간다)
+
+## 세션 6 통합 (2026-10-14, 브랜치 `yewon/agent-world-phase6`)
+
+6a~6d 네 갈래를 서브에이전트 worktree에서 병렬로 만들고 통합했다. 충돌은 세션 기록(양쪽 덧붙임), `brand_agent/main.py` import, `brand_campaign.py` 탐색 호출(트레이싱 span + governance 인자) 셋뿐.
+
+### 통합 후 추가
+- **목표 슬롯**: 두 에이전트가 각자 발견한 경쟁(병렬 협상이 stop 플래그를 보기 전에 동시에 합의 → 목표 초과)을 세마포어 슬롯으로 막았다. 테스트 `test_parallel_fan_out_never_agrees_past_the_target`.
+- **취소 + 중복 방지**: `POST /promotions/{id}/campaigns/{campaignId}:cancel`, 프로모션당 실행 중 캠페인 1개(409 `CAMPAIGN_ALREADY_RUNNING`). 프론트 "관전 중단"이 이 엔드포인트를 부르면 서버 스레드도 멈춘다(프론트 연결은 다음).
+- 결과: 백엔드 254 passed / 8 skipped, 프론트 typecheck·eslint·28 tests.
+
+### 남은 것
+- [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
+- [ ] 승인·캠페인 라우트 인증
+- [ ] 단일 협상 경로(`start_negotiation`)에도 `negotiation.run` span

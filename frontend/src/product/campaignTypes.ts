@@ -18,7 +18,12 @@ export type CampaignRequest = {
   maxRounds?: number;
 };
 
-export type CampaignOutcome = "TARGET_REACHED" | "PARTIAL" | "NO_AGREEMENT" | "NO_CANDIDATES";
+export type CampaignOutcome =
+  | "TARGET_REACHED"
+  | "PARTIAL"
+  | "NO_AGREEMENT"
+  | "NO_CANDIDATES"
+  | "CANCELED";
 
 export type NegotiationOutcome =
   | "AGREED"
@@ -28,7 +33,7 @@ export type NegotiationOutcome =
   | "ROUND_LIMIT"
   | "CANCELED";
 
-export type NegotiationSkipReason = "TARGET_REACHED" | "BUDGET_EXHAUSTED";
+export type NegotiationSkipReason = "TARGET_REACHED" | "BUDGET_EXHAUSTED" | "CANCELED";
 
 export type CandidateCardStatus = "UP" | "DOWN" | "NO_SKILL" | "SKIPPED";
 

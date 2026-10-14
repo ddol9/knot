@@ -52,7 +52,7 @@ from libs.policies.governance import GovernanceDecision, GovernanceRules, evalua
 from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
 
-CampaignOutcome = Literal["TARGET_REACHED", "PARTIAL", "NO_AGREEMENT", "NO_CANDIDATES"]
+CampaignOutcome = Literal["TARGET_REACHED", "PARTIAL", "NO_AGREEMENT", "NO_CANDIDATES", "CANCELED"]
 TransportFactory = Callable[[str], A2ATransport]  # base_url -> transport
 # agreement document -> escrow summary
 #   {"status": "LOCKED" | "SKIPPED" | "FAILED", "reason"?, "escrowId"?, "signature"?}
@@ -240,6 +240,11 @@ class CampaignRunner:
         self._agreed = 0
         self._agreed_lock = threading.Lock()
         self._stop = threading.Event()
+        self._cancel_requested = False
+        # Target slots: a negotiation holds one from start to finish and keeps it on AGREED,
+        # so (in flight + agreed) never exceeds the target and parallel fan-out cannot
+        # over-agree. Acquired in rank order because workers are submitted in rank order.
+        self._slots = threading.Semaphore(strategy.target_creator_count)
         self._creator_id_by_agent: dict[str, str] = {}
         self._agreement_ids: list[str] = []
         # Fixed at construction so the SSE `status` event can announce it before run().
@@ -249,6 +254,15 @@ class CampaignRunner:
     @property
     def campaign_id(self) -> str:
         return self._campaign_id
+
+    def request_stop(self) -> None:
+        """Stop starting new negotiations and cancel in-flight ones before their next send."""
+        self._cancel_requested = True
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
 
     @property
     def trace_id(self) -> str:
@@ -330,11 +344,21 @@ class CampaignRunner:
 
         def work(negotiation: CandidateNegotiation) -> None:
             agent_id = negotiation.creator_agent_id
-            reservation = ledger.reserve_or_wait(
-                agent_id, per_creator_ceiling, give_up=self._stop.is_set
-            )
+            while not self._slots.acquire(timeout=0.5):
+                if self._stop.is_set():
+                    break
+            if self._stop.is_set():
+                reservation = "STOPPED"
+            else:
+                reservation = ledger.reserve_or_wait(
+                    agent_id, per_creator_ceiling, give_up=self._stop.is_set
+                )
             if reservation != "RESERVED":
-                reason = "TARGET_REACHED" if reservation == "STOPPED" else "BUDGET_EXHAUSTED"
+                self._slots.release()
+                if reservation == "STOPPED":
+                    reason = "CANCELED" if self._cancel_requested else "TARGET_REACHED"
+                else:
+                    reason = "BUDGET_EXHAUSTED"
                 negotiation.status, negotiation.skip_reason = "SKIPPED", reason
                 self._emit(
                     "negotiation_skipped",
@@ -372,6 +396,7 @@ class CampaignRunner:
                 ).run()
             except CreatorA2AClientError as exc:
                 ledger.release(agent_id)
+                self._slots.release()
                 negotiation.status, negotiation.skip_reason = "SKIPPED", f"A2A_ERROR: {exc}"
                 # Could not talk to it: the registry should order it later next time.
                 record_agent_probe(
@@ -392,6 +417,7 @@ class CampaignRunner:
                 except AgreementTermsMismatch as exc:
                     # Not a shared, provable term sheet: never count it, give the budget back.
                     ledger.release(agent_id)
+                    self._slots.release()
                     negotiation.skip_reason = "TERMS_HASH_MISMATCH"
                     self._emit("negotiation_error", agent_id, {"detail": str(exc)})
                 else:
@@ -405,6 +431,7 @@ class CampaignRunner:
                             ledger.wake_all()
             else:
                 ledger.release(agent_id)
+                self._slots.release()
             self._emit(
                 "negotiation_result",
                 agent_id,
@@ -440,6 +467,8 @@ class CampaignRunner:
 
         if self._agreed >= strategy.target_creator_count:
             outcome: CampaignOutcome = "TARGET_REACHED"
+        elif self._cancel_requested:
+            outcome = "CANCELED"
         elif self._agreed > 0:
             outcome = "PARTIAL"
         else:

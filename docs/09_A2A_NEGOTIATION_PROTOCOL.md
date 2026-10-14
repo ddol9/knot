@@ -471,3 +471,8 @@ rankScore = score × (0.85 if DOWN) × (0.7 if flagged) + 0.05 × (agreementRate
 - 제품 API 캠페인(`_campaign_runner`)과 독립 브랜드 에이전트 모두 `GovernanceRules.from_settings(settings)`를 러너에 넣는다. 독립 에이전트는 정산이 어차피 `SETTLEMENT_VIA_PRODUCT_API`라 승인 문서만 자기 저장소에 남는다.
 - 관전 페이지·CLI: "🙋 사람 승인 대기 (approvalId …)".
 - 코드: `libs/policies/governance.py`, `libs/agents/brand_campaign.py::_queue_approval`, `apps/api/routes.py` 승인 라우트, `tests/test_governance.py`, `tests/test_api_approvals.py`.
+
+### 부록 2 보강: 목표 슬롯과 취소 (2026-10-14)
+- **목표 슬롯**: 협상 하나가 시작부터 끝까지 슬롯 하나를 쥐고, AGREED면 돌려주지 않는다. `(진행 중 + 합의) ≤ 목표 인원`이 항상 성립해 병렬 팬아웃이 목표를 넘겨 합의하는 경쟁이 없다. 슬롯은 순위 순으로 잡힌다.
+- **취소**: `POST /api/v1/promotions/{id}/campaigns/{campaignId}:cancel` → 대기 후보는 `CANCELED`로 미시작, 진행 중은 다음 전송 전에 A2A cancel. 이미 만든 합의는 남는다. 캠페인 결과 `outcome: CANCELED`(목표 미달 시).
+- **중복 방지**: 프로모션당 실행 중 캠페인은 하나. 두 번째 `POST /campaigns`나 `/campaigns/stream`은 409 `CAMPAIGN_ALREADY_RUNNING`. 브라우저 EventSource 자동 재접속이 같은 크리에이터들에게 두 번째 팬아웃을 띄우지 않는다.

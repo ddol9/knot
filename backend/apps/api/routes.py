@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import socket
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -71,6 +72,7 @@ from libs.agents.agreements import write_agreement_milestones as _write_agreemen
 from libs.agents.brand import build_initial_terms
 from libs.agents.brand_campaign import (
     CampaignEvent,
+    CampaignResult,
     CampaignRunner,
     CampaignStrategy,
     http_transport_factory,
@@ -2217,6 +2219,33 @@ def build_api_router(
             "explorerUrl": receipt.get("explorerUrl"),
         }
 
+    # One running campaign per promotion; lets a client cancel and stops a reconnecting
+    # EventSource from starting a second fan-out against the same creators.
+    running_campaigns: dict[str, CampaignRunner] = {}
+    running_campaigns_lock = threading.Lock()
+
+    def _register_campaign(promotion_id: str, runner: CampaignRunner) -> None:
+        with running_campaigns_lock:
+            current = running_campaigns.get(promotion_id)
+            if current is not None and not current.stopped:
+                raise _problem(
+                    status.HTTP_409_CONFLICT,
+                    "CAMPAIGN_ALREADY_RUNNING",
+                    f"Campaign {current.campaign_id} is already running for this Promotion.",
+                )
+            running_campaigns[promotion_id] = runner
+
+    def _unregister_campaign(promotion_id: str, runner: CampaignRunner) -> None:
+        with running_campaigns_lock:
+            if running_campaigns.get(promotion_id) is runner:
+                del running_campaigns[promotion_id]
+
+    def _run_registered(promotion_id: str, runner: CampaignRunner) -> CampaignResult:
+        try:
+            return runner.run()
+        finally:
+            _unregister_campaign(promotion_id, runner)
+
     @router.post("/promotions/{promotion_id}/campaigns", status_code=status.HTTP_201_CREATED)
     def run_campaign(
         promotion_id: str, request: PromotionCampaignRequest | None = None
@@ -2225,13 +2254,14 @@ def build_api_router(
         trace_id = current_trace_id() or new_trace_id()
         with start_trace(trace_id):
             runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
+            _register_campaign(promotion_id, runner)
             _append_promotion_event(
                 repository,
                 promotion_id=promotion_id,
                 event_type="CAMPAIGN_STARTED",
                 data={"campaignId": runner.campaign_id, "traceId": runner.trace_id},
             )
-            result = runner.run()
+            result = _run_registered(promotion_id, runner)
         agreements = [
             document
             for agreement_id in result.agreement_ids
@@ -2280,8 +2310,30 @@ def build_api_router(
             maxRounds=maxRounds,
         )
         _get_promotion(repository, promotion_id)  # 404 before the stream opens
+        with running_campaigns_lock:
+            current = running_campaigns.get(promotion_id)
+        if current is not None and not current.stopped:
+            raise _problem(
+                status.HTTP_409_CONFLICT,
+                "CAMPAIGN_ALREADY_RUNNING",
+                f"Campaign {current.campaign_id} is already running for this Promotion.",
+            )
         # Captured here: the body generator may run outside the request's context.
         trace_id = current_trace_id() or new_trace_id()
+
+        def build_runner(on_event: Callable[[CampaignEvent], None]) -> CampaignRunner:
+            runner = _campaign_runner(promotion_id, request, on_event)
+            _register_campaign(promotion_id, runner)
+            run = runner.run
+
+            def run_and_unregister() -> CampaignResult:
+                try:
+                    return run()
+                finally:
+                    _unregister_campaign(promotion_id, runner)
+
+            runner.run = run_and_unregister  # type: ignore[method-assign]
+            return runner
 
         def events() -> Iterator[str]:
             # Starlette steps a sync generator in a fresh context copy per `next()`, so the
@@ -2289,7 +2341,7 @@ def build_api_router(
             # thread's context) is created; later steps only forward events.
             with start_trace(trace_id):
                 stream = campaign_event_stream(
-                    lambda on_event: _campaign_runner(promotion_id, request, on_event),
+                    build_runner,
                     status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
                 )
                 first = next(stream)
@@ -2301,6 +2353,23 @@ def build_api_router(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @router.post("/promotions/{promotion_id}/campaigns/{campaign_id}:cancel")
+    def cancel_campaign(promotion_id: str, campaign_id: str) -> dict[str, object]:
+        """Stop a running campaign: queued candidates are skipped, in-flight ones canceled
+        before their next A2A send. Agreements already made stay."""
+        with running_campaigns_lock:
+            runner = running_campaigns.get(promotion_id)
+        if runner is None or runner.campaign_id != campaign_id:
+            raise _not_found("campaign", campaign_id)
+        runner.request_stop()
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion_id,
+            event_type="CAMPAIGN_CANCEL_REQUESTED",
+            data={"campaignId": campaign_id},
+        )
+        return _ok({"campaignId": campaign_id, "status": "CANCELING"})
 
     # --- approval queue: governance parked an escrow lock for a person --------------------
 

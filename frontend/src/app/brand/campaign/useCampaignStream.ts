@@ -86,6 +86,7 @@ export const CAMPAIGN_OUTCOME_LABEL: Record<CampaignResult["outcome"], string> =
   PARTIAL: "일부 합의",
   NO_AGREEMENT: "합의 없음",
   NO_CANDIDATES: "후보 없음",
+  CANCELED: "브랜드가 취소",
 };
 
 export const TURN_TYPE_LABEL: Record<CampaignTurn["type"], string> = {
@@ -200,7 +201,9 @@ function applyEvent(state: CampaignStreamState, event: CampaignStreamEvent): Cam
           label:
             event.data.reason === "TARGET_REACHED"
               ? "목표 인원 도달로 시작하지 않음"
-              : "예산 소진으로 시작하지 않음",
+              : event.data.reason === "CANCELED"
+                ? "캠페인 취소로 시작하지 않음"
+                : "예산 소진으로 시작하지 않음",
         },
       }));
 
