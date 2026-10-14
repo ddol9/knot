@@ -26,6 +26,7 @@ HEALTH_UNKNOWN = "UNKNOWN"
 # Negotiation outcomes that count as an attempt the creator agent answered. A brand-side
 # cancel (target reached elsewhere) says nothing about the creator and is tracked apart.
 _ATTEMPT_OUTCOMES = {"AGREED", "REJECTED", "ESCALATED", "WALKED_AWAY", "ROUND_LIMIT"}
+RECENT_OUTCOMES_LIMIT = 10
 _STAT_FIELD = {
     "AGREED": "agreements",
     "REJECTED": "rejections",
@@ -167,6 +168,8 @@ class TrackRecord(BaseModel):
     canceled: int = 0
     last_outcome: str | None = Field(default=None, alias="lastOutcome")
     last_negotiated_at: str | None = Field(default=None, alias="lastNegotiatedAt")
+    # Most recent attempt outcomes, oldest first (bounded; governance anomaly flags read it).
+    recent_outcomes: list[str] = Field(default_factory=list, alias="recentOutcomes")
 
     @property
     def agreement_rate(self) -> float:
@@ -193,6 +196,7 @@ def record_negotiation_outcome(
     update: dict[str, Any] = {"lastOutcome": outcome, "lastNegotiatedAt": now}
     if outcome in _ATTEMPT_OUTCOMES:
         update["attempts"] = record.attempts + 1
+        update["recentOutcomes"] = [*record.recent_outcomes, outcome][-RECENT_OUTCOMES_LIMIT:]
     field = _STAT_FIELD.get(outcome)
     if field is not None:
         current = record.model_dump(by_alias=True)[field]
