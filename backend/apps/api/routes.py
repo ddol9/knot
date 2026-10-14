@@ -172,6 +172,11 @@ from libs.web3.wallet_proof import (
 logger = logging.getLogger(__name__)
 
 
+# Campaign default opening offer as a share of the private ceiling when the Promotion
+# sets no initialOffer; opening at the ceiling would make every negotiation a one-shot.
+DEFAULT_OPENING_PCT = 70
+
+
 def build_api_router(
     repository: KnotRepository,
     settings: Settings | None = None,
@@ -2122,11 +2127,14 @@ def build_api_router(
         brand = repository.get_raw_document(FirestorePaths.brand(promotion.brand_id))
         per_creator = promotion.budget.max_per_creator_usdc
         ceiling = request.ceiling_usdc if request.ceiling_usdc is not None else per_creator
-        opening = (
-            request.opening_amount_usdc
-            if request.opening_amount_usdc is not None
-            else _promotion_initial_offer_usdc(promotion_document) or min(ceiling, per_creator)
-        )
+        if request.opening_amount_usdc is not None:
+            opening = request.opening_amount_usdc
+        else:
+            # Promotion's initialOffer, else open below the ceiling so there is room to
+            # concede; opening at the ceiling would turn every negotiation into a one-shot.
+            opening = _promotion_initial_offer_usdc(promotion_document) or (
+                ceiling * DEFAULT_OPENING_PCT // 100
+            )
         strategy = CampaignStrategy(
             targetCreatorCount=request.target_creator_count,
             maxCandidates=request.max_candidates,
@@ -2326,13 +2334,13 @@ def build_api_router(
     @router.get("/promotions/{promotion_id}/campaigns/stream")
     def stream_campaign(
         promotion_id: str,
-        targetCreatorCount: int = 1,
-        maxCandidates: int = 5,
-        parallelism: int = 3,
-        openingAmountUsdc: int | None = None,
-        ceilingUsdc: int | None = None,
-        concessionPct: int = 50,
-        maxRounds: int | None = None,
+        targetCreatorCount: int = Query(default=1, ge=1, le=20),
+        maxCandidates: int = Query(default=5, ge=1, le=20),
+        parallelism: int = Query(default=3, ge=1, le=10),
+        openingAmountUsdc: int | None = Query(default=None, ge=0),
+        ceilingUsdc: int | None = Query(default=None, ge=0),
+        concessionPct: int = Query(default=50, ge=1, le=100),
+        maxRounds: int | None = Query(default=None, ge=1, le=5),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> StreamingResponse:
         # Same bearer as the POST (the Next proxy forwards Authorization); checked before

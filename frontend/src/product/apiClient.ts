@@ -1262,6 +1262,12 @@ export class ProductApiClient {
     return envelope.data;
   }
 
+  /** 클라이언트 바깥(fetch SSE 등)에서 쓸 인증 헤더. 토큰이 없으면 빈 객체. */
+  static async authHeaders(): Promise<Record<string, string>> {
+    const token = await ProductApiClient.authTokenProvider?.();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   private async headers(init?: RequestInit) {
     const headers = new Headers(init?.headers);
     if (init?.body && !headers.has("Content-Type")) {
@@ -1273,6 +1279,11 @@ export class ProductApiClient {
     }
     return headers;
   }
+}
+
+/** fetch 기반 SSE처럼 클라이언트 바깥에서 여는 요청에 붙일 인증 헤더. 토큰이 없으면 빈 객체. */
+export async function authHeaders(): Promise<Record<string, string>> {
+  return ProductApiClient.authHeaders();
 }
 
 /** 실패 응답(status + JSON body)을 ProductApiError로. 스트림(fetch SSE) 경로도 같은 규칙을 쓴다. */

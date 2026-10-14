@@ -583,3 +583,21 @@ cd frontend && KNOT_API_BASE_URL=http://127.0.0.1:8180 npx next dev --webpack -p
 - [ ] 로컬 모드 캠페인에 인위적 지연 옵션(데모에서 "관전 중단"을 눈으로 보려면) — 백엔드
 - [ ] 승인 뒤 `lastAttempt`가 있는 PENDING(락 실패) 재시도 UX 실측(web3 gateway 모드 필요)
 - [ ] Firebase 로그인 환경에서 두 페이지 눈으로 확인
+
+## 세션 7 통합 (2026-10-14, 브랜치 `yewon/agent-world-phase7`)
+
+7a~7c 세 갈래를 병렬로 만들어 통합했다. 충돌은 세션 기록뿐. 백엔드 두 갈래가 `routes.py`를 나눠 고쳤고 git이 자동으로 합쳤다.
+
+### 통합 후 보강
+- 캠페인 스트림이 EventSource → fetch 스트리밍으로 바뀐 김에 `authHeaders()`로 토큰을 보낸다. 이제 `KNOT_CAMPAIGN_AUTH_REQUIRED=1`을 켜도 대시보드 캠페인 페이지가 동작한다(7b의 선결 조건 해소).
+- 스트림 쿼리 파라미터를 `Query(ge/le)`로 검증(이전엔 maxRounds 20이 500).
+- 캠페인 기본 첫 제안: 프로모션 `initialOffer`가 없으면 상한의 70%(`DEFAULT_OPENING_PCT`). 상한으로 열면 모든 협상이 1라운드로 끝나 양보가 없었다.
+- 거절 사유 저장 키는 `reason`으로 고정(프론트는 `reason`/`rejectReason` 둘 다 읽음).
+
+### 결과
+- 백엔드 268 passed / 8 skipped, 프론트 typecheck·eslint·34 tests.
+
+### 남은 것
+- [ ] 로컬 A2A 모드는 캠페인이 수십 ms에 끝나 "관전 중단"을 눈으로 보기 어렵다. 데모용 지연 옵션 또는 http+Gemini 모드로 시연
+- [ ] 브랜드 대시보드에 승인 대기 건수 배지
+- [ ] 마일스톤 릴리즈(creatorAccepted → deposit) 자동화 연결

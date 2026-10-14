@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { ProductApiError, runningCampaignIdFromProblem, toApiError } from "@/product/apiClient";
+import { ProductApiError, runningCampaignIdFromProblem, toApiError, authHeaders } from "@/product/apiClient";
 import { governanceReasonLabel } from "@/product/approvalTypes";
 import {
   CAMPAIGN_STREAM_EVENT_NAMES,
@@ -482,7 +482,8 @@ export function useCampaignStream(options: UseCampaignStreamOptions = {}) {
           response = await fetch(url, {
             signal: controller.signal,
             cache: "no-store",
-            headers: { Accept: "text/event-stream" },
+            // 캠페인 라우트는 토큰이 있으면 브랜드 소유자 검증을 한다 (KNOT_CAMPAIGN_AUTH_REQUIRED 대비).
+            headers: { Accept: "text/event-stream", ...(await authHeaders()) },
           });
         } catch {
           if (!live()) return;
