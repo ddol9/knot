@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KNOT A2A Live</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #6b7280; --line: #e5e7eb;
+    --brand: #2563eb; --brand-soft: #dbeafe; --creator: #059669; --creator-soft: #d1fae5;
+    --warn: #b45309; --warn-soft: #fef3c7; --bad: #b91c1c; --bad-soft: #fee2e2; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --panel: #171a21; --ink: #e8eaf0; --muted: #9aa3b2; --line: #272b35;
+      --brand: #60a5fa; --brand-soft: #1e3a8a; --creator: #34d399; --creator-soft: #064e3b;
+      --warn: #fbbf24; --warn-soft: #432f06; --bad: #f87171; --bad-soft: #4c1414;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --panel: #171a21; --ink: #e8eaf0; --muted: #9aa3b2; --line: #272b35;
+    --brand: #60a5fa; --brand-soft: #1e3a8a; --creator: #34d399; --creator-soft: #064e3b;
+    --warn: #fbbf24; --warn-soft: #432f06; --bad: #f87171; --bad-soft: #4c1414;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  label:first-child { margin-top: 0; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { margin-top: 14px; width: 100%; padding: 10px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); margin-top: 8px; }
+  .agents { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+  .agent { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); }
+  .agent.b { border-color: var(--brand); } .agent.c { border-color: var(--creator); text-align: right; }
+  .agent .name { font-weight: 600; } .agent .st { color: var(--muted); font-size: 12px; }
+  .agent.typing .st::after { content: " ●"; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .chat { min-height: 420px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 78%; padding: 10px 12px; border-radius: 14px; animation: pop .2s ease-out; }
+  @keyframes pop { from { transform: translateY(6px); opacity: 0; } }
+  .msg.brand { align-self: flex-start; background: var(--brand-soft); border-bottom-left-radius: 4px; }
+  .msg.creator { align-self: flex-end; background: var(--creator-soft); border-bottom-right-radius: 4px; }
+  .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; display: flex; gap: 8px; }
+  .msg.creator .meta { justify-content: flex-end; }
+  .msg .amt { font-weight: 700; font-size: 17px; }
+  .msg .amt .tag { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
+  .brand .tag { background: var(--brand); color: #fff; } .creator .tag { background: var(--creator); color: #fff; }
+  .msg .txt { margin-top: 2px; }
+  .msg .prov { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 4px; }
+  .sys { align-self: center; font-size: 12px; color: var(--muted); }
+  .result { margin-top: 12px; padding: 12px 14px; border-radius: 10px; font-weight: 600; }
+  .result.AGREED { background: var(--creator-soft); color: var(--creator); }
+  .result.WALKED_AWAY, .result.ROUND_LIMIT, .result.ESCALATED { background: var(--warn-soft); color: var(--warn); }
+  .result.REJECTED, .result.ERROR { background: var(--bad-soft); color: var(--bad); }
+  .result small { display: block; font-weight: 400; font-family: var(--mono); font-size: 11px; margin-top: 4px; word-break: break-all; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>KNOT A2A Live — Brand Agent ↔ Creator Agent</h1>
+  <p class="sub">브랜드 에이전트(이 서버)가 크리에이터 에이전트에 HTTP A2A로 메시지를 보내고, 턴이 생길 때마다 SSE로 여기에 밀어넣습니다.</p>
+
+  <div class="grid">
+    <form class="panel" id="f">
+      <label>크리에이터 에이전트</label>
+      <select name="creatorAgentId">
+        <option value="creator-agent-001">creator-agent-001 (min 650)</option>
+        <option value="creator-agent-002">creator-agent-002 (min 500)</option>
+        <option value="creator-agent-003">creator-agent-003 (min 400)</option>
+      </select>
+      <div class="row">
+        <div><label>첫 제안 (USDC)</label><input name="openingAmountUsdc" type="number" value="500" min="0"></div>
+        <div><label>비공개 상한</label><input name="ceilingUsdc" type="number" value="700" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label>양보 비율 %</label><input name="concessionPct" type="number" value="50" min="1" max="100"></div>
+        <div><label>최대 라운드</label><input name="maxRounds" type="number" value="5" min="1" max="5"></div>
+      </div>
+      <label>카테고리</label>
+      <select name="category">
+        <option value="beauty">beauty</option><option value="fashion">fashion</option>
+        <option value="food">food</option><option value="gambling">gambling (차단 업종)</option>
+      </select>
+      <label>크리에이터 최소 금액 덮어쓰기 (선택)</label>
+      <input name="creatorMinBaseUsdc" type="number" placeholder="비우면 에이전트 등록 정책 사용">
+      <button id="go" type="submit">🚀 협상 시작</button>
+      <button id="stop" type="button" class="ghost" disabled>중단</button>
+      <div class="hint">시나리오: 500/700 → 합의 · 400/600 → 물러남 · gambling → 거절</div>
+    </form>
+
+    <div class="panel">
+      <div class="agents">
+        <div class="agent b" id="ab"><div class="name">💼 Brand Agent</div><div class="st">대기</div></div>
+        <div class="agent c" id="ac"><div class="name">🎨 Creator Agent</div><div class="st">대기</div></div>
+      </div>
+      <div class="chat" id="chat"><div class="sys">왼쪽에서 조건을 정하고 시작하세요.</div></div>
+      <div id="result"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const chat = $('#chat'), ab = $('#ab'), ac = $('#ac'), go = $('#go'), stop = $('#stop'), res = $('#result');
+  let es = null;
+
+  function setStatus(el, text, typing) {
+    el.querySelector('.st').textContent = text;
+    el.classList.toggle('typing', !!typing);
+  }
+  function sys(text) {
+    const d = document.createElement('div'); d.className = 'sys'; d.textContent = text; chat.appendChild(d); scroll();
+  }
+  function scroll() { chat.lastElementChild && chat.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'end' }); }
+  function bubble(t) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + t.role;
+    const prov = t.messageProvider + (t.messageModel ? ' / ' + t.messageModel : '');
+    d.innerHTML =
+      `<div class="meta"><span>round ${t.round}</span><span>${t.role === 'brand' ? '💼 Brand' : '🎨 Creator'}</span></div>` +
+      `<div class="amt">${t.amountUsdc} USDC<span class="tag">${t.type}</span></div>` +
+      `<div class="txt"></div><div class="prov">${prov}</div>`;
+    d.querySelector('.txt').textContent = t.message;
+    chat.appendChild(d); scroll();
+  }
+  function finish(kind, text, extra) {
+    res.innerHTML = `<div class="result ${kind}">${text}${extra ? '<small>' + extra + '</small>' : ''}</div>`;
+    setStatus(ab, '종료', false); setStatus(ac, '종료', false);
+    go.disabled = false; stop.disabled = true;
+    if (es) { es.close(); es = null; }
+  }
+
+  $('#f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (es) es.close();
+    chat.innerHTML = ''; res.innerHTML = '';
+    const fd = new FormData(e.target), q = new URLSearchParams();
+    for (const [k, v] of fd.entries()) if (String(v).trim() !== '') q.set(k, v);
+    go.disabled = true; stop.disabled = false;
+    setStatus(ab, '크리에이터 agent card 조회 중', true); setStatus(ac, '대기', false);
+
+    es = new EventSource('/brand/v1/negotiations/stream?' + q.toString());
+    es.addEventListener('status', (ev) => {
+      const s = JSON.parse(ev.data);
+      ab.querySelector('.name').textContent = '💼 ' + s.brandAgentId;
+      ac.querySelector('.name').textContent = '🎨 ' + s.creatorAgentId;
+      sys(`agent card 확인: ${s.creatorAgentCard.name} @ ${s.creatorAgentUrl} · LLM ${s.llmMode}`);
+      setStatus(ab, '첫 제안 작성 중', true);
+    });
+    es.addEventListener('turn', (ev) => {
+      const t = JSON.parse(ev.data);
+      bubble(t);
+      if (t.role === 'brand') {
+        setStatus(ab, `${t.type} 전송`, false);
+        setStatus(ac, '평가 중', true);
+      } else {
+        setStatus(ac, `${t.type} 응답`, false);
+        if (t.type === 'COUNTER') setStatus(ab, '역제안 검토 중', true);
+      }
+    });
+    es.addEventListener('result', (ev) => {
+      const r = JSON.parse(ev.data);
+      const label = { AGREED: '🤝 합의', REJECTED: '🚫 크리에이터 거절', WALKED_AWAY: '🚪 브랜드 철수 (상한 초과)',
+                      ROUND_LIMIT: '⏱ 라운드 초과', ESCALATED: '🙋 사람 검토 필요' }[r.outcome] || r.outcome;
+      const extra = [`${r.rounds} rounds · task ${r.taskState}`, r.agreementId && `agreementId ${r.agreementId}`,
+                     r.termsHash && `termsHash ${r.termsHash}`].filter(Boolean).join('<br>');
+      finish(r.outcome, `${label} · 최종 ${r.finalAmountUsdc} USDC`, extra);
+    });
+    es.addEventListener('error', (ev) => {
+      let detail = '연결이 끊겼습니다 (브랜드 에이전트가 떠 있는지 확인).';
+      try { if (ev.data) detail = JSON.parse(ev.data).detail; } catch (_) {}
+      if (es) finish('ERROR', '⚠️ ' + detail);
+    });
+  });
+  stop.addEventListener('click', () => finish('ERROR', '중단됨 (서버 쪽 협상은 계속 끝까지 진행됩니다)'));
+})();
+</script>
+</body>
+</html>

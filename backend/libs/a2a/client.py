@@ -72,6 +72,22 @@ class CreatorA2AClient:
             raise CreatorA2AClientError("Creator A2A response is missing task")
         return A2ATask.model_validate(body["task"])
 
+    def cancel_task(self, task_id: str) -> A2ATask:
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.post(
+                    f"{self.base_url}/tasks/{task_id}:cancel",
+                    headers=self._headers(content_type=False),
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise CreatorA2AClientError(str(exc)) from exc
+
+        body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("task"), dict):
+            raise CreatorA2AClientError("Creator A2A cancel response is missing task")
+        return A2ATask.model_validate(body["task"])
+
     def _headers(self, *, content_type: bool) -> dict[str, str]:
         headers = {"A2A-Version": A2A_VERSION}
         if content_type:

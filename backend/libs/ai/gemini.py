@@ -82,6 +82,12 @@ def creator_rationale(
 ) -> AnalysisText | None:
     prompt: dict[str, object] = {
         "task": "Write the display rationale for a creator agent negotiation decision.",
+        "thinkingSteps": {
+            "step1_analyze": "제안 내용 분석: 금액, 일정, 조건이 정책 기준과 어떻게 비교되는가?",
+            "step2_identify": "위반 사항 식별: 어떤 정책 규칙이 위반되었는가? (있다면)",
+            "step3_tone": "응답 톤 결정: ACCEPT는 긍정적, COUNTER는 건설적, REJECT는 정중하게",
+            "step4_compose": "위 분석을 바탕으로 자연스러운 한국어 문장 작성",
+        },
         "rules": [
             "The decision type and policy result are already fixed by code.",
             "Do not authorize payment, escrow, settlement, or any policy override.",
@@ -110,12 +116,21 @@ def creator_rationale(
         },
         "terms": payload.terms.model_dump(by_alias=True, mode="json"),
         "policyDecision": decision.policy_decision.model_dump(by_alias=True, mode="json"),
-        "outputSchema": {"rationale": "string"},
+        "outputSchema": {
+            "thinking": {
+                "analysis": "string",
+                "violations": "string",
+                "tone": "string",
+            },
+            "confidence": "number",
+            "rationale": "string",
+        },
     }
     generated = _generate_json(settings=settings, prompt=prompt)
     if generated.data is None:
         return None
     rationale = generated.data.get("rationale")
+    confidence = generated.data.get("confidence", 1.0)
     if not isinstance(rationale, str) or not rationale.strip():
         return AnalysisText(
             text=decision.rationale,
@@ -123,6 +138,9 @@ def creator_rationale(
             model=None,
             fallbackReason="invalid_json_shape",
         )
+    # Confidence가 낮으면 경고 (SKT 면접용)
+    if confidence < 0.7:
+        rationale = f"[검토 필요] {rationale}"
     return AnalysisText(
         text=rationale.strip(),
         provider="vertex-gemini",

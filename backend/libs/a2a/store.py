@@ -43,9 +43,11 @@ class InMemoryA2ATaskStore:
             object | None,
         ]
         | None = None,
+        allowed_tenants: set[str] | None = None,
     ) -> None:
         self._context_by_tenant = context_by_tenant
         self._context_resolver = context_resolver
+        self._allowed_tenants = allowed_tenants
         self._tasks: dict[str, A2ATask] = {}
         self._message_results: dict[str, A2ATask] = {}
         self._rationale_provider = rationale_provider
@@ -56,6 +58,8 @@ class InMemoryA2ATaskStore:
     def register_context(self, tenant: str, context: CreatorNegotiationContext) -> None:
         if context.creator_agent_id != tenant:
             raise A2ATaskError("context tenant mismatch")
+        if self._allowed_tenants is not None and tenant not in self._allowed_tenants:
+            raise A2ATaskError("tenant not hosted by this creator agent")
         self._context_by_tenant[tenant] = context
 
     def get_task(self, task_id: str) -> A2ATask:
@@ -146,6 +150,8 @@ class InMemoryA2ATaskStore:
         return task
 
     def _get_context(self, tenant: str) -> CreatorNegotiationContext:
+        if self._allowed_tenants is not None and tenant not in self._allowed_tenants:
+            raise A2ATaskError("tenant not hosted by this creator agent")
         if self._context_resolver is not None:
             context = self._context_resolver(tenant)
             if context is not None:

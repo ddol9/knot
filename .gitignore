@@ -56,3 +56,6 @@ docs/private/
 .omc/
 frontend/.omc/
 .vercel
+
+# venv symlink at repo root
+.venv

@@ -29,3 +29,38 @@ def build_creator_agent_card(base_url: str) -> dict[str, object]:
             }
         ],
     }
+
+
+def build_brand_agent_card(base_url: str) -> dict[str, object]:
+    return {
+        "name": "KNOT Brand Negotiation Agent",
+        "description": "Runs autonomous promotion negotiations against creator agents over A2A.",
+        "supportedInterfaces": [
+            {
+                "url": base_url,
+                "protocolBinding": "HTTP+JSON",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "provider": {"organization": "KNOT", "url": "https://knot.example"},
+        "version": "1.0.0",
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "extendedAgentCard": False,
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": [
+            {
+                "id": "promotion-offer",
+                "name": "Promotion Offer",
+                "description": (
+                    "Opens an offer, concedes within a private ceiling, accepts or walks away."
+                ),
+                "tags": ["brand", "promotion", "negotiation"],
+                "inputModes": ["application/json"],
+                "outputModes": ["application/json"],
+            }
+        ],
+    }

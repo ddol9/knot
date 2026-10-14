@@ -7,6 +7,8 @@
 # 띄우는 것:
 #   Firebase Auth 에뮬레이터 :9099 (UI :4000)   — 로그인/구글가입 (실제 Firebase 미접속)
 #   Creator A2A              :8081
+#   Brand Agent              :8083  (apps/brand_agent — A2A로 Creator와 협상)
+#   여러 크리에이터 프로세스로 쪼개서 보려면 scripts/local/a2a_multi_agent.sh
 #   Product API              :18080
 #   Web3 Gateway             :8082
 #   Frontend (next dev)      :3000
@@ -55,12 +57,13 @@ wait_http() { local url="$1" n="${2:-60}"; for _ in $(seq 1 "$n"); do curl -fsS 
 # 에뮬레이터는 cwd에 firebase-debug.log 를 남기므로 로그 디렉터리에서 실행(레포 오염 방지)
 start auth-emulator sh -c "cd '$LOGS' && exec npx -y firebase-tools emulators:start --only auth --project demo-knot --config '$HERE/firebase.json'"
 start creator-a2a env KNOT_SERVICE_NAME=knot-creator-agent "$PY/uvicorn" apps.creator_agent.main:app --app-dir "$ROOT/backend" --host 127.0.0.1 --port 8081
+start brand-agent env KNOT_SERVICE_NAME=knot-brand-agent "$PY/uvicorn" apps.brand_agent.main:app --app-dir "$ROOT/backend" --host 127.0.0.1 --port 8083
 start product-api env KNOT_SERVICE_NAME=knot-api "$PY/uvicorn" apps.api.main:app --app-dir "$ROOT/backend" --host 127.0.0.1 --port 18080
 start web3-gateway env PORT=8082 npm --prefix "$ROOT/web3/gateway" run dev
 [[ $WITH_FE == 1 ]] && start frontend npm --prefix "$ROOT/frontend" run dev
 
 echo
-for probe in "product-api|http://127.0.0.1:18080/healthz" "creator-a2a|http://127.0.0.1:8081/healthz" \
+for probe in "product-api|http://127.0.0.1:18080/healthz" "creator-a2a|http://127.0.0.1:8081/healthz" "brand-agent|http://127.0.0.1:8083/healthz" \
              "web3-gateway|http://127.0.0.1:8082/healthz" "auth-emulator|http://127.0.0.1:9099"; do
   name="${probe%%|*}"; url="${probe#*|}"
   if wait_http "$url"; then echo "  ✅ $name  $url"; else echo "  ❌ $name  $url  → $LOGS/$name.log"; fi
