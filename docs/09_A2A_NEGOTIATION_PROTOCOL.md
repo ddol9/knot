@@ -472,6 +472,9 @@ rankScore = score × (0.85 if DOWN) × (0.7 if flagged) + 0.05 × (agreementRate
 - 관전 페이지·CLI: "🙋 사람 승인 대기 (approvalId …)".
 - 코드: `libs/policies/governance.py`, `libs/agents/brand_campaign.py::_queue_approval`, `apps/api/routes.py` 승인 라우트, `tests/test_governance.py`, `tests/test_api_approvals.py`.
 
+### 인증 (2026-10-14 추가)
+캠페인 라우트(`POST /promotions/{id}/campaigns`, `GET …/campaigns/stream`, `POST …/campaigns/{cid}:cancel`)와 승인 라우트 4개는 같은 네임스페이스의 `POST /agreements/{id}/escrow:lock`과 같은 규칙을 따른다. **`Authorization` 베어러가 있으면 반드시 맞아야 한다**: 토큰 무효 → 401 `UNAUTHENTICATED`, 온보딩 완료된 BRAND가 아님 → 403 `FORBIDDEN`(409 `ONBOARDING_REQUIRED`), 프로모션의 `brandId`가 내 브랜드가 아님 → 403 `FORBIDDEN`(`/brand/promotions/{id}`와 같은 판단, 프로모션 `ownerUid`는 보지 않는다). 헤더가 없으면 익명 에이전트 런타임 경로(로컬 데모, 시드 `promotion-001`은 소유 사용자가 없다)이고, `KNOT_CAMPAIGN_AUTH_REQUIRED=1`이면 그 경로가 401로 닫힌다. `GET /approvals`는 토큰이 있으면 내 브랜드 프로모션의 승인만 돌려주고, `:approve`/`:reject`는 소유권 검사를 상태 검사보다 먼저 해 다른 브랜드는 403 뒤로 아무것도 알 수 없다. 결정은 `approvals/{id}.decidedBy`(uid, 익명이면 `null`)에 남고 타임라인 `APPROVAL_GRANTED`/`APPROVAL_REJECTED`의 `data.decidedBy`, 감사 이벤트 `data.actorUid`로 나간다. 프론트 관전은 네이티브 `EventSource`라 헤더를 못 싣는다 — 스위치를 켜기 전에 스트림 쪽을 바꿔야 한다(Next 프록시는 `Authorization`을 전달한다). ExecPlan 14.
+
 ### 부록 2 보강: 목표 슬롯과 취소 (2026-10-14)
 - **목표 슬롯**: 협상 하나가 시작부터 끝까지 슬롯 하나를 쥐고, AGREED면 돌려주지 않는다. `(진행 중 + 합의) ≤ 목표 인원`이 항상 성립해 병렬 팬아웃이 목표를 넘겨 합의하는 경쟁이 없다. 슬롯은 순위 순으로 잡힌다.
 - **취소**: `POST /api/v1/promotions/{id}/campaigns/{campaignId}:cancel` → 대기 후보는 `CANCELED`로 미시작, 진행 중은 다음 전송 전에 A2A cancel. 이미 만든 합의는 남는다. 캠페인 결과 `outcome: CANCELED`(목표 미달 시).

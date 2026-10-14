@@ -125,7 +125,13 @@ from libs.domain.models import (
     RateCard,
     UsageRights,
 )
-from libs.observability.tracing import current_trace_id, new_trace_id, start_trace
+from libs.observability.tracing import (
+    Span,
+    current_trace_id,
+    new_trace_id,
+    span,
+    start_trace,
+)
 from libs.payments.paysh import PayCliNotFound, PayShError, verify_content
 from libs.payments.paysh import fetch as fetch_paysh
 from libs.payments.settlement import (
@@ -164,6 +170,11 @@ from libs.web3.wallet_proof import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Campaign default opening offer as a share of the private ceiling when the Promotion
+# sets no initialOffer; opening at the ceiling would make every negotiation a one-shot.
+DEFAULT_OPENING_PCT = 70
 
 
 def build_api_router(
@@ -1941,141 +1952,166 @@ def build_api_router(
         active_run = _active_match_run_for_promotion(repository, promotion_id)
         if active_run is not None:
             return _ok({"matchRun": active_run})
-        discovery_repository = FirestoreCreatorDiscoveryRepository(repository)
-        search_result = discovery_repository.search(promotion, limit=DISCOVERY_LIMIT)
-        public_ranked = rank_discovery_candidates(promotion, search_result.projections)
-        detailed_candidates, detail_read_count = detail_candidates(
-            repository,
-            public_ranked,
-            limit=DETAIL_READ_LIMIT,
-        )
-        ranked = _apply_private_eligibility(promotion, detailed_candidates)
-        selected_pair = next(
-            ((candidate, creator) for candidate, creator in ranked if candidate.eligible),
-            None,
-        )
-        selected = selected_pair[0] if selected_pair else None
-        selected_creator = selected_pair[1] if selected_pair else None
-        final_status = "COMPLETED" if selected is not None else "WAITING_FOR_CREATOR"
-        final_event_type = (
-            "MATCH_RUN_COMPLETED" if selected is not None else "MATCH_RUN_WAITING_FOR_CREATOR"
-        )
-        final_history = [
-            "READY",
-            "DISCOVERING",
-            "RANKING",
-            "SELECTING",
-            final_status,
-        ]
         match_run_id = f"match-{uuid4()}"
-        now = _now()
-        match_run: dict[str, object] = {
-            "matchRunId": match_run_id,
-            "promotionId": promotion.promotion_id,
-            "brandAgentId": promotion.brand_agent_id,
-            "status": final_status,
-            "stateHistory": final_history,
-            "weightsVersion": MATCHING_WEIGHTS_VERSION,
-            "rankingVersion": DISCOVERY_RANKING_VERSION,
-            "discoveryLimit": search_result.metrics.query_limit,
-            "discoveryReturnedCount": search_result.metrics.returned_count,
-            "detailReadLimit": search_result.metrics.detail_read_limit,
-            "detailReadCount": detail_read_count,
-            "selectedCreatorId": selected_creator.creator_id if selected_creator else None,
-            "selectedCreatorAgentId": selected.creator_agent_id if selected else None,
-            "idempotencyKey": idempotency_key,
-            "createdAt": now,
-            "completedAt": now,
-        }
-        match_run_path = FirestorePaths.match_run(match_run_id)
-        repository.save_raw_document(match_run_path, match_run)
-        _append_match_run_event(
-            repository,
-            match_run_id=match_run_id,
-            event_type="MATCH_RUN_READY",
-            status_value="READY",
-            data={"promotionId": promotion_id},
-        )
-        _append_match_run_event(
-            repository,
-            match_run_id=match_run_id,
-            event_type="MATCH_RUN_DISCOVERING",
-            status_value="DISCOVERING",
-            data={"discoveryLimit": search_result.metrics.query_limit},
-        )
-        _append_match_run_event(
-            repository,
-            match_run_id=match_run_id,
-            event_type="MATCH_RUN_RANKING",
-            status_value="RANKING",
-            data={"candidateCount": len(ranked)},
-        )
-        _append_match_run_event(
-            repository,
-            match_run_id=match_run_id,
-            event_type="MATCH_RUN_SELECTING",
-            status_value="SELECTING",
-            data={"selectedCreatorAgentId": selected.creator_agent_id if selected else None},
-        )
-        for candidate, creator in ranked:
-            document = _discovery_candidate_document(candidate)
-            document["creatorId"] = creator.creator_id
-            document["creatorDisplayName"] = creator.display_name
-            document["categories"] = creator.categories
-            document["supportedDeliverableFormats"] = creator.supported_deliverable_formats
-            document["creatorProfilePath"] = FirestorePaths.creator_profile(creator.creator_id)
-            document["profileVersion"] = candidate.projection.get("profileVersion")
-            document["taxonomyVersion"] = candidate.projection.get("taxonomyVersion")
-            document["embeddingVersion"] = candidate.projection.get("embeddingVersion")
-            document["indexVersion"] = candidate.projection.get("indexVersion")
-            explanation = _candidate_explanation(
-                settings=settings,
-                promotion=promotion,
-                creator=creator,
-                candidate=document,
+        # One trace per match run (discovery → ranking → selection → pay.sh verification).
+        trace_id = current_trace_id() or new_trace_id()
+        with (
+            start_trace(trace_id),
+            span(
+                "match.run",
+                promotionId=promotion.promotion_id,
+                brandAgentId=promotion.brand_agent_id,
+                matchRunId=match_run_id,
+            ) as match_span,
+        ):
+            discovery_repository = FirestoreCreatorDiscoveryRepository(repository)
+            search_result = discovery_repository.search(promotion, limit=DISCOVERY_LIMIT)
+            public_ranked = rank_discovery_candidates(promotion, search_result.projections)
+            detailed_candidates, detail_read_count = detail_candidates(
+                repository,
+                public_ranked,
+                limit=DETAIL_READ_LIMIT,
             )
-            document["explanation"] = explanation.text
-            document["analysisProvider"] = explanation.provider
-            document["analysisModel"] = explanation.model
-            document["analysisFallbackReason"] = explanation.fallback_reason
-            document["negotiationId"] = None
-            repository.save_raw_document(
-                FirestorePaths.match_candidate(match_run_id, creator.creator_id),
-                document,
+            ranked = _apply_private_eligibility(promotion, detailed_candidates)
+            selected_pair = next(
+                ((candidate, creator) for candidate, creator in ranked if candidate.eligible),
+                None,
             )
-        paid_verification = _run_paid_verification(
-            repository=repository,
-            settings=settings,
-            match_run_id=match_run_id,
-            promotion_id=promotion_id,
-            brand_agent_id=promotion.brand_agent_id,
-            selected_creator_agent_id=selected.creator_agent_id if selected else None,
-        )
-        match_run = {**match_run, "paidVerification": paid_verification}
-        repository.save_raw_document(match_run_path, match_run)
-        _append_match_run_event(
-            repository,
-            match_run_id=match_run_id,
-            event_type=final_event_type,
-            status_value=final_status,
-            data={"selectedCreatorAgentId": selected.creator_agent_id if selected else None},
-        )
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type="API_PAYMENT",
-            data=paid_verification,
-        )
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type=final_event_type,
-            data={
+            selected = selected_pair[0] if selected_pair else None
+            selected_creator = selected_pair[1] if selected_pair else None
+            match_span.set(
+                queried=search_result.metrics.returned_count,
+                ranked=len(ranked),
+                eligible=sum(1 for candidate, _ in ranked if candidate.eligible),
+                selected=1 if selected is not None else 0,
+                selectedCreatorAgentId=selected.creator_agent_id if selected else None,
+            )
+            final_status = "COMPLETED" if selected is not None else "WAITING_FOR_CREATOR"
+            final_event_type = (
+                "MATCH_RUN_COMPLETED" if selected is not None else "MATCH_RUN_WAITING_FOR_CREATOR"
+            )
+            final_history = [
+                "READY",
+                "DISCOVERING",
+                "RANKING",
+                "SELECTING",
+                final_status,
+            ]
+            now = _now()
+            match_run: dict[str, object] = {
                 "matchRunId": match_run_id,
+                "promotionId": promotion.promotion_id,
+                "brandAgentId": promotion.brand_agent_id,
+                "status": final_status,
+                "stateHistory": final_history,
+                "weightsVersion": MATCHING_WEIGHTS_VERSION,
+                "rankingVersion": DISCOVERY_RANKING_VERSION,
+                "discoveryLimit": search_result.metrics.query_limit,
+                "discoveryReturnedCount": search_result.metrics.returned_count,
+                "detailReadLimit": search_result.metrics.detail_read_limit,
+                "detailReadCount": detail_read_count,
+                "selectedCreatorId": selected_creator.creator_id if selected_creator else None,
                 "selectedCreatorAgentId": selected.creator_agent_id if selected else None,
-            },
-        )
-        return _ok({"matchRun": match_run})
+                "idempotencyKey": idempotency_key,
+                "traceId": match_span.trace_id,
+                "createdAt": now,
+                "completedAt": now,
+            }
+            match_run_path = FirestorePaths.match_run(match_run_id)
+            repository.save_raw_document(match_run_path, match_run)
+            _append_match_run_event(
+                repository,
+                match_run_id=match_run_id,
+                event_type="MATCH_RUN_READY",
+                status_value="READY",
+                data={"promotionId": promotion_id},
+            )
+            _append_match_run_event(
+                repository,
+                match_run_id=match_run_id,
+                event_type="MATCH_RUN_DISCOVERING",
+                status_value="DISCOVERING",
+                data={"discoveryLimit": search_result.metrics.query_limit},
+            )
+            _append_match_run_event(
+                repository,
+                match_run_id=match_run_id,
+                event_type="MATCH_RUN_RANKING",
+                status_value="RANKING",
+                data={"candidateCount": len(ranked)},
+            )
+            _append_match_run_event(
+                repository,
+                match_run_id=match_run_id,
+                event_type="MATCH_RUN_SELECTING",
+                status_value="SELECTING",
+                data={"selectedCreatorAgentId": selected.creator_agent_id if selected else None},
+            )
+            for candidate, creator in ranked:
+                document = _discovery_candidate_document(candidate)
+                document["creatorId"] = creator.creator_id
+                document["creatorDisplayName"] = creator.display_name
+                document["categories"] = creator.categories
+                document["supportedDeliverableFormats"] = creator.supported_deliverable_formats
+                document["creatorProfilePath"] = FirestorePaths.creator_profile(creator.creator_id)
+                document["profileVersion"] = candidate.projection.get("profileVersion")
+                document["taxonomyVersion"] = candidate.projection.get("taxonomyVersion")
+                document["embeddingVersion"] = candidate.projection.get("embeddingVersion")
+                document["indexVersion"] = candidate.projection.get("indexVersion")
+                explanation = _candidate_explanation(
+                    settings=settings,
+                    promotion=promotion,
+                    creator=creator,
+                    candidate=document,
+                )
+                document["explanation"] = explanation.text
+                document["analysisProvider"] = explanation.provider
+                document["analysisModel"] = explanation.model
+                document["analysisFallbackReason"] = explanation.fallback_reason
+                document["negotiationId"] = None
+                repository.save_raw_document(
+                    FirestorePaths.match_candidate(match_run_id, creator.creator_id),
+                    document,
+                )
+            paid_verification = _traced_paid_verification(
+                repository=repository,
+                settings=settings,
+                match_run_id=match_run_id,
+                promotion_id=promotion_id,
+                brand_agent_id=promotion.brand_agent_id,
+                selected_creator_agent_id=selected.creator_agent_id if selected else None,
+            )
+            match_span.set(
+                verificationMode=paid_verification.get("mode"),
+                verificationStatus=paid_verification.get("status"),
+            )
+            match_run = {**match_run, "paidVerification": paid_verification}
+            repository.save_raw_document(match_run_path, match_run)
+            _append_match_run_event(
+                repository,
+                match_run_id=match_run_id,
+                event_type=final_event_type,
+                status_value=final_status,
+                data={"selectedCreatorAgentId": selected.creator_agent_id if selected else None},
+            )
+            _append_promotion_event(
+                repository,
+                promotion_id=promotion_id,
+                event_type="API_PAYMENT",
+                data=paid_verification,
+            )
+            _append_promotion_event(
+                repository,
+                promotion_id=promotion_id,
+                event_type=final_event_type,
+                data={
+                    "matchRunId": match_run_id,
+                    "selectedCreatorAgentId": selected.creator_agent_id if selected else None,
+                },
+            )
+            response = _ok({"matchRun": match_run})
+            cast(dict[str, object], response["meta"])["traceId"] = match_span.trace_id
+            return response
 
     # --- campaign: discovery -> parallel A2A negotiation -> agreements (+ escrow) ----------
 
@@ -2091,11 +2127,14 @@ def build_api_router(
         brand = repository.get_raw_document(FirestorePaths.brand(promotion.brand_id))
         per_creator = promotion.budget.max_per_creator_usdc
         ceiling = request.ceiling_usdc if request.ceiling_usdc is not None else per_creator
-        opening = (
-            request.opening_amount_usdc
-            if request.opening_amount_usdc is not None
-            else _promotion_initial_offer_usdc(promotion_document) or min(ceiling, per_creator)
-        )
+        if request.opening_amount_usdc is not None:
+            opening = request.opening_amount_usdc
+        else:
+            # Promotion's initialOffer, else open below the ceiling so there is room to
+            # concede; opening at the ceiling would turn every negotiation into a one-shot.
+            opening = _promotion_initial_offer_usdc(promotion_document) or (
+                ceiling * DEFAULT_OPENING_PCT // 100
+            )
         strategy = CampaignStrategy(
             targetCreatorCount=request.target_creator_count,
             maxCandidates=request.max_candidates,
@@ -2248,8 +2287,11 @@ def build_api_router(
 
     @router.post("/promotions/{promotion_id}/campaigns", status_code=status.HTTP_201_CREATED)
     def run_campaign(
-        promotion_id: str, request: PromotionCampaignRequest | None = None
+        promotion_id: str,
+        request: PromotionCampaignRequest | None = None,
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         # One trace per campaign request: the middleware's request trace id when present.
         trace_id = current_trace_id() or new_trace_id()
         with start_trace(trace_id):
@@ -2292,14 +2334,18 @@ def build_api_router(
     @router.get("/promotions/{promotion_id}/campaigns/stream")
     def stream_campaign(
         promotion_id: str,
-        targetCreatorCount: int = 1,
-        maxCandidates: int = 5,
-        parallelism: int = 3,
-        openingAmountUsdc: int | None = None,
-        ceilingUsdc: int | None = None,
-        concessionPct: int = 50,
-        maxRounds: int | None = None,
+        targetCreatorCount: int = Query(default=1, ge=1, le=20),
+        maxCandidates: int = Query(default=5, ge=1, le=20),
+        parallelism: int = Query(default=3, ge=1, le=10),
+        openingAmountUsdc: int | None = Query(default=None, ge=0),
+        ceilingUsdc: int | None = Query(default=None, ge=0),
+        concessionPct: int = Query(default=50, ge=1, le=100),
+        maxRounds: int | None = Query(default=None, ge=1, le=5),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> StreamingResponse:
+        # Same bearer as the POST (the Next proxy forwards Authorization); checked before
+        # the stream opens so a 401/403 is a plain response, not an SSE error event.
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         request = PromotionCampaignRequest(
             targetCreatorCount=targetCreatorCount,
             maxCandidates=maxCandidates,
@@ -2355,9 +2401,14 @@ def build_api_router(
         )
 
     @router.post("/promotions/{promotion_id}/campaigns/{campaign_id}:cancel")
-    def cancel_campaign(promotion_id: str, campaign_id: str) -> dict[str, object]:
+    def cancel_campaign(
+        promotion_id: str,
+        campaign_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
         """Stop a running campaign: queued candidates are skipped, in-flight ones canceled
         before their next A2A send. Agreements already made stay."""
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         with running_campaigns_lock:
             runner = running_campaigns.get(promotion_id)
         if runner is None or runner.campaign_id != campaign_id:
@@ -2376,24 +2427,51 @@ def build_api_router(
     @router.get("/approvals")
     def list_approvals(
         status_filter: str | None = Query(default=None, alias="status"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
-        approvals = repository.list_raw_documents(COLLECTIONS.approvals)
+        user = _optional_brand_user(repository, settings, token_verifier, authorization)
+        approvals = _approvals_for_brand(
+            repository, repository.list_raw_documents(COLLECTIONS.approvals), user
+        )
         if status_filter:
             approvals = [a for a in approvals if a.get("status") == status_filter.upper()]
         approvals.sort(key=lambda item: str(item.get("createdAt", "")))
         return _ok({"approvals": approvals})
 
     @router.get("/approvals/{approval_id}")
-    def get_approval(approval_id: str) -> dict[str, object]:
-        return _ok({"approval": _get_approval(repository, approval_id)})
+    def get_approval(
+        approval_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
+        approval, _ = _owned_approval(approval_id, authorization)
+        return _ok({"approval": approval})
+
+    def _owned_approval(
+        approval_id: str, authorization: str | None
+    ) -> tuple[dict[str, object], str | None]:
+        """The approval and who is acting (Brand uid, or None on the anonymous dev path).
+
+        The owner check runs before any state check, so another Brand learns nothing
+        past the 403.
+        """
+        approval = _get_approval(repository, approval_id)
+        user = _optional_promotion_owner(
+            repository,
+            settings,
+            token_verifier,
+            authorization,
+            _require_document_str(approval, "promotionId"),
+        )
+        return approval, (_require_document_str(user, "uid") if user is not None else None)
 
     @router.post("/approvals/{approval_id}:approve")
     def approve_approval(
         approval_id: str,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
         """A person approves: run the settlement the campaign would have run."""
-        approval = _get_approval(repository, approval_id)
+        approval, decided_by = _owned_approval(approval_id, authorization)
         if approval.get("status") == "APPROVED":
             return _ok({"approval": approval})  # idempotent: same decision, same escrow
         if approval.get("status") != "PENDING":
@@ -2418,7 +2496,9 @@ def build_api_router(
                 str(escrow.get("reason") or "ESCROW_LOCK_FAILED"),
                 str(escrow.get("detail") or "Escrow lock failed; approval stays PENDING."),
             )
-        decided = _decide_approval(approval, decision="APPROVED", escrow=escrow)
+        decided = _decide_approval(
+            approval, decision="APPROVED", escrow=escrow, decided_by=decided_by
+        )
         _append_promotion_event(
             repository,
             promotion_id=promotion.promotion_id,
@@ -2429,18 +2509,23 @@ def build_api_router(
                 "amountUsdc": approval.get("amountUsdc"),
                 "escrowStatus": escrow.get("status"),
                 "escrowId": escrow.get("escrowId"),
+                "decidedBy": decided_by,
             },
         )
         _append_audit(
             repository,
             action="APPROVAL_GRANTED",
-            data={"approvalId": approval_id, "agreementId": agreement_id},
+            data={"approvalId": approval_id, "agreementId": agreement_id, "actorUid": decided_by},
         )
         return _ok({"approval": decided, "escrow": escrow})
 
     @router.post("/approvals/{approval_id}:reject")
-    def reject_approval(approval_id: str, request: ApprovalRejectRequest) -> dict[str, object]:
-        approval = _get_approval(repository, approval_id)
+    def reject_approval(
+        approval_id: str,
+        request: ApprovalRejectRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
+        approval, decided_by = _owned_approval(approval_id, authorization)
         if approval.get("status") == "REJECTED":
             return _ok({"approval": approval})
         if approval.get("status") != "PENDING":
@@ -2450,7 +2535,9 @@ def build_api_router(
                 f"Approval {approval_id} is {approval.get('status')}, not PENDING.",
             )
         agreement_id = _require_document_str(approval, "agreementId")
-        decided = _decide_approval(approval, decision="REJECTED", reason=request.reason)
+        decided = _decide_approval(
+            approval, decision="REJECTED", reason=request.reason, decided_by=decided_by
+        )
         _append_promotion_event(
             repository,
             promotion_id=_require_document_str(approval, "promotionId"),
@@ -2460,12 +2547,13 @@ def build_api_router(
                 "agreementId": agreement_id,
                 "amountUsdc": approval.get("amountUsdc"),
                 "reason": request.reason,
+                "decidedBy": decided_by,
             },
         )
         _append_audit(
             repository,
             action="APPROVAL_REJECTED",
-            data={"approvalId": approval_id, "agreementId": agreement_id},
+            data={"approvalId": approval_id, "agreementId": agreement_id, "actorUid": decided_by},
         )
         return _ok({"approval": decided})
 
@@ -2475,6 +2563,7 @@ def build_api_router(
         decision: str,
         escrow: dict[str, object] | None = None,
         reason: str | None = None,
+        decided_by: str | None = None,
     ) -> dict[str, object]:
         """Persist the decision on the approval, the agreement and the campaign candidate."""
         now = _now()
@@ -2483,6 +2572,7 @@ def build_api_router(
             **approval,
             "status": decision,
             "decidedAt": now,
+            "decidedBy": decided_by,  # Brand uid, or None on the anonymous dev path
             "updatedAt": now,
         }
         if escrow is not None:
@@ -2686,585 +2776,635 @@ def build_api_router(
                         ),
                     }
                 )
-        agent_policy = repository.get_agent_policy(creator_agent_id)
-        if agent_policy is None:
-            raise _not_found("agentPolicy", creator_agent_id)
-        registry_entry = _require_creator_agent_registry_entry(repository, creator_agent_id)
-        creator_a2a_base_url = _creator_a2a_base_url(settings, registry_entry)
-
-        terms = build_initial_terms(
-            promotion,
-            creator,
-            base_amount_usdc=_promotion_initial_offer_usdc(promotion_document),
-        )
-        brand_decision = validate_brand_terms(promotion, creator, terms, current_round=1)
-        if not brand_decision.allowed:
-            raise _problem(
-                status.HTTP_409_CONFLICT,
-                "POLICY_VIOLATION",
-                "Initial terms do not satisfy Brand policy.",
-            )
-
         negotiation_id = f"negotiation-{uuid4()}"
         context_id = f"context-{uuid4()}"
-        offer_message_id = f"message-{uuid4()}"
-        decision_id = f"decision-{uuid4()}"
-        now = _now()
-        payload = NegotiationPayload(
-            type=NegotiationMessageType.OFFER,
-            round=1,
-            promotion=promotion,
-            terms=terms,
-            changedFields=[],
-            rationale="Initial promotion offer",
-            display=_brand_negotiation_display(
-                settings=settings,
-                message_type=NegotiationMessageType.OFFER,
-                terms=terms,
-                promotion=promotion,
-                rationale="딜당 권한 한도 안에서 첫 제안을 보냅니다.",
-            ),
-        )
-        offer_message = A2AMessage(
-            messageId=offer_message_id,
-            contextId=context_id,
-            role=A2ARole.USER,
-            parts=[
-                A2APart(
-                    mediaType="application/json",
-                    data=payload.model_dump(by_alias=True, mode="json"),
-                )
-            ],
-        )
-        creator_context = CreatorNegotiationContext(
-            creatorAgentId=creator_agent_id,
-            policy=agent_policy.creator,
-            today=_policy_today(promotion),
-            currentMonthDeliverables=creator.active_deliverables_this_month,
-            maxRounds=promotion.autonomy.max_negotiation_rounds,
-        )
-        agent_card = _discover_creator_agent_card(settings=settings, base_url=creator_a2a_base_url)
-        _validate_creator_agent_card(agent_card, creator_agent_id)
-        try:
-            initial_task = _send_creator_a2a_task(
-                settings=settings,
-                base_url=creator_a2a_base_url,
-                creator_agent_id=creator_agent_id,
-                message=offer_message,
-                context=creator_context,
-            )
-        except CreatorA2AClientError as exc:
-            raise _problem(
-                status.HTTP_502_BAD_GATEWAY,
-                "A2A_CREATOR_AGENT_UNAVAILABLE",
-                f"Creator A2A negotiation failed: {exc}",
-            ) from exc
+        # One trace per negotiation request (the middleware's request trace id when
+        # present): the same `negotiation.run` → `a2a.send` → `creator.decide` tree as
+        # the campaign path, so `scripts/trace_tail.py` shows both alike.
+        trace_id = current_trace_id() or new_trace_id()
+        with (
+            start_trace(trace_id),
+            span(
+                "negotiation.run",
+                brandAgentId=promotion.brand_agent_id,
+                creatorAgentId=creator_agent_id,
+                promotionId=promotion.promotion_id,
+                contextId=context_id,
+                negotiationId=negotiation_id,
+                matchRunId=match_run_id,
+                maxRounds=promotion.autonomy.max_negotiation_rounds,
+            ) as run_span,
+        ):
+            agent_policy = repository.get_agent_policy(creator_agent_id)
+            if agent_policy is None:
+                raise _not_found("agentPolicy", creator_agent_id)
+            registry_entry = _require_creator_agent_registry_entry(repository, creator_agent_id)
+            creator_a2a_base_url = _creator_a2a_base_url(settings, registry_entry)
 
-        a2a_task = initial_task
-        task_id = initial_task.id
-        response_message = initial_task.status.message
-        try:
-            creator_decision_document = first_part_data(response_message)
-        except CreatorA2AClientError as exc:
-            raise _problem(
-                status.HTTP_409_CONFLICT,
-                "INVALID_STATE_TRANSITION",
-                f"Creator A2A response is invalid: {exc}",
-            ) from exc
-        decision_type = _decision_type_from_document(creator_decision_document)
-        response_message_id = (
-            response_message.message_id if response_message else f"message-{uuid4()}"
-        )
-        response_terms = creator_decision_document.get("terms")
-        current_terms = (
-            response_terms
-            if isinstance(response_terms, dict)
-            else payload.terms.model_dump(by_alias=True, mode="json")
-        )
-        persisted_messages: list[dict[str, object]] = [
-            {
-                "messageId": offer_message_id,
-                "contextId": context_id,
-                "taskId": task_id,
-                "role": "ROLE_USER",
-                "sequence": 1,
-                "payload": payload.model_dump(by_alias=True, mode="json"),
-                "a2aMessage": offer_message.model_dump(by_alias=True, mode="json"),
-                "createdAt": now,
-            }
-        ]
-        persisted_decisions: list[dict[str, object]] = []
-        if response_message is not None:
-            persisted_messages.append(
-                {
-                    "messageId": response_message_id,
-                    "contextId": context_id,
-                    "taskId": task_id,
-                    "role": "ROLE_AGENT",
-                    "sequence": 2,
-                    "payload": creator_decision_document,
-                    "a2aMessage": response_message.model_dump(by_alias=True, mode="json"),
-                    "createdAt": now,
-                }
-            )
-        persisted_decisions.append(
-            {
-                "decisionId": decision_id,
-                "messageId": response_message_id,
-                "type": decision_type.value,
-                "policyDecision": creator_decision_document.get("policyDecision"),
-                "createdAt": now,
-            }
-        )
-        final_brand_decision = brand_decision
-        if decision_type == NegotiationMessageType.COUNTER:
-            counter_terms = AgreementTerms.model_validate(current_terms)
-            final_brand_decision = validate_brand_terms(
+            terms = build_initial_terms(
                 promotion,
                 creator,
-                counter_terms,
-                current_round=2,
+                base_amount_usdc=_promotion_initial_offer_usdc(promotion_document),
             )
+            brand_decision = validate_brand_terms(promotion, creator, terms, current_round=1)
+            if not brand_decision.allowed:
+                raise _problem(
+                    status.HTTP_409_CONFLICT,
+                    "POLICY_VIOLATION",
+                    "Initial terms do not satisfy Brand policy.",
+                )
+
+            offer_message_id = f"message-{uuid4()}"
+            decision_id = f"decision-{uuid4()}"
+            now = _now()
+            payload = NegotiationPayload(
+                type=NegotiationMessageType.OFFER,
+                round=1,
+                promotion=promotion,
+                terms=terms,
+                changedFields=[],
+                rationale="Initial promotion offer",
+                display=_brand_negotiation_display(
+                    settings=settings,
+                    message_type=NegotiationMessageType.OFFER,
+                    terms=terms,
+                    promotion=promotion,
+                    rationale="딜당 권한 한도 안에서 첫 제안을 보냅니다.",
+                ),
+            )
+            offer_message = A2AMessage(
+                messageId=offer_message_id,
+                contextId=context_id,
+                role=A2ARole.USER,
+                parts=[
+                    A2APart(
+                        mediaType="application/json",
+                        data=payload.model_dump(by_alias=True, mode="json"),
+                    )
+                ],
+            )
+            creator_context = CreatorNegotiationContext(
+                creatorAgentId=creator_agent_id,
+                policy=agent_policy.creator,
+                today=_policy_today(promotion),
+                currentMonthDeliverables=creator.active_deliverables_this_month,
+                maxRounds=promotion.autonomy.max_negotiation_rounds,
+            )
+            agent_card = _discover_creator_agent_card(
+                settings=settings, base_url=creator_a2a_base_url
+            )
+            _validate_creator_agent_card(agent_card, creator_agent_id)
+            _trace_negotiation_turn(
+                run_span, "brand", payload.model_dump(by_alias=True, mode="json")
+            )
+            try:
+                initial_task = _send_creator_a2a_task(
+                    settings=settings,
+                    base_url=creator_a2a_base_url,
+                    creator_agent_id=creator_agent_id,
+                    message=offer_message,
+                    context=creator_context,
+                )
+            except CreatorA2AClientError as exc:
+                raise _problem(
+                    status.HTTP_502_BAD_GATEWAY,
+                    "A2A_CREATOR_AGENT_UNAVAILABLE",
+                    f"Creator A2A negotiation failed: {exc}",
+                ) from exc
+
+            a2a_task = initial_task
+            task_id = initial_task.id
+            response_message = initial_task.status.message
+            try:
+                creator_decision_document = first_part_data(response_message)
+            except CreatorA2AClientError as exc:
+                raise _problem(
+                    status.HTTP_409_CONFLICT,
+                    "INVALID_STATE_TRANSITION",
+                    f"Creator A2A response is invalid: {exc}",
+                ) from exc
+            decision_type = _decision_type_from_document(creator_decision_document)
+            _trace_negotiation_turn(run_span, "creator", creator_decision_document)
+            response_message_id = (
+                response_message.message_id if response_message else f"message-{uuid4()}"
+            )
+            response_terms = creator_decision_document.get("terms")
+            current_terms = (
+                response_terms
+                if isinstance(response_terms, dict)
+                else payload.terms.model_dump(by_alias=True, mode="json")
+            )
+            persisted_messages: list[dict[str, object]] = [
+                {
+                    "messageId": offer_message_id,
+                    "contextId": context_id,
+                    "taskId": task_id,
+                    "role": "ROLE_USER",
+                    "sequence": 1,
+                    "payload": payload.model_dump(by_alias=True, mode="json"),
+                    "a2aMessage": offer_message.model_dump(by_alias=True, mode="json"),
+                    "createdAt": now,
+                }
+            ]
+            persisted_decisions: list[dict[str, object]] = []
+            if response_message is not None:
+                persisted_messages.append(
+                    {
+                        "messageId": response_message_id,
+                        "contextId": context_id,
+                        "taskId": task_id,
+                        "role": "ROLE_AGENT",
+                        "sequence": 2,
+                        "payload": creator_decision_document,
+                        "a2aMessage": response_message.model_dump(by_alias=True, mode="json"),
+                        "createdAt": now,
+                    }
+                )
             persisted_decisions.append(
                 {
-                    "decisionId": f"decision-{uuid4()}",
+                    "decisionId": decision_id,
                     "messageId": response_message_id,
-                    "type": "BRAND_POLICY_EVALUATION",
-                    "policyDecision": final_brand_decision.model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
+                    "type": decision_type.value,
+                    "policyDecision": creator_decision_document.get("policyDecision"),
                     "createdAt": now,
                 }
             )
-            if final_brand_decision.allowed:
-                bridge_terms = _brand_bridge_counter_terms(terms, counter_terms)
-                if bridge_terms is not None and promotion.autonomy.max_negotiation_rounds >= 3:
-                    bridge_payload = NegotiationPayload(
-                        type=NegotiationMessageType.COUNTER,
-                        round=2,
-                        promotion=promotion,
-                        terms=bridge_terms,
-                        changedFields=["compensation.baseAmountUsdc"],
-                        rationale="Brand policy allows one more counteroffer before accepting.",
-                        display=_brand_negotiation_display(
-                            settings=settings,
-                            message_type=NegotiationMessageType.COUNTER,
+            final_brand_decision = brand_decision
+            if decision_type == NegotiationMessageType.COUNTER:
+                counter_terms = AgreementTerms.model_validate(current_terms)
+                final_brand_decision = validate_brand_terms(
+                    promotion,
+                    creator,
+                    counter_terms,
+                    current_round=2,
+                )
+                persisted_decisions.append(
+                    {
+                        "decisionId": f"decision-{uuid4()}",
+                        "messageId": response_message_id,
+                        "type": "BRAND_POLICY_EVALUATION",
+                        "policyDecision": final_brand_decision.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                        "createdAt": now,
+                    }
+                )
+                if final_brand_decision.allowed:
+                    bridge_terms = _brand_bridge_counter_terms(terms, counter_terms)
+                    if bridge_terms is not None and promotion.autonomy.max_negotiation_rounds >= 3:
+                        bridge_payload = NegotiationPayload(
+                            type=NegotiationMessageType.COUNTER,
+                            round=2,
+                            promotion=promotion,
                             terms=bridge_terms,
-                            promotion=promotion,
-                            rationale="예산 안에서 한 번 더 조정해봅니다.",
-                        ),
-                    )
-                    bridge_message_id = f"message-{uuid4()}"
-                    bridge_message = A2AMessage(
-                        messageId=bridge_message_id,
-                        contextId=context_id,
-                        taskId=task_id,
-                        role=A2ARole.USER,
-                        parts=[
-                            A2APart(
-                                mediaType="application/json",
-                                data=bridge_payload.model_dump(by_alias=True, mode="json"),
-                            )
-                        ],
-                    )
-                    try:
-                        a2a_task = _send_creator_a2a_task(
-                            settings=settings,
-                            base_url=creator_a2a_base_url,
-                            creator_agent_id=creator_agent_id,
-                            message=bridge_message,
-                            context=creator_context,
-                        )
-                    except CreatorA2AClientError as exc:
-                        raise _problem(
-                            status.HTTP_502_BAD_GATEWAY,
-                            "A2A_CREATOR_AGENT_UNAVAILABLE",
-                            f"Creator A2A counter failed: {exc}",
-                        ) from exc
-                    persisted_messages.append(
-                        {
-                            "messageId": bridge_message_id,
-                            "contextId": context_id,
-                            "taskId": task_id,
-                            "role": "ROLE_USER",
-                            "sequence": 3,
-                            "payload": bridge_payload.model_dump(by_alias=True, mode="json"),
-                            "a2aMessage": bridge_message.model_dump(
-                                by_alias=True,
-                                mode="json",
+                            changedFields=["compensation.baseAmountUsdc"],
+                            rationale="Brand policy allows one more counteroffer before accepting.",
+                            display=_brand_negotiation_display(
+                                settings=settings,
+                                message_type=NegotiationMessageType.COUNTER,
+                                terms=bridge_terms,
+                                promotion=promotion,
+                                rationale="예산 안에서 한 번 더 조정해봅니다.",
                             ),
-                            "createdAt": now,
-                        }
-                    )
-                    response_message = a2a_task.status.message
-                    try:
-                        creator_decision_document = first_part_data(response_message)
-                    except CreatorA2AClientError as exc:
-                        raise _problem(
-                            status.HTTP_409_CONFLICT,
-                            "INVALID_STATE_TRANSITION",
-                            f"Creator A2A counter response is invalid: {exc}",
-                        ) from exc
-                    decision_type = _decision_type_from_document(creator_decision_document)
-                    response_message_id = (
-                        response_message.message_id if response_message else f"message-{uuid4()}"
-                    )
-                    response_terms = creator_decision_document.get("terms")
-                    current_terms = (
-                        response_terms if isinstance(response_terms, dict) else current_terms
-                    )
-                    if response_message is not None:
+                        )
+                        bridge_message_id = f"message-{uuid4()}"
+                        bridge_message = A2AMessage(
+                            messageId=bridge_message_id,
+                            contextId=context_id,
+                            taskId=task_id,
+                            role=A2ARole.USER,
+                            parts=[
+                                A2APart(
+                                    mediaType="application/json",
+                                    data=bridge_payload.model_dump(by_alias=True, mode="json"),
+                                )
+                            ],
+                        )
+                        _trace_negotiation_turn(
+                            run_span, "brand", bridge_payload.model_dump(by_alias=True, mode="json")
+                        )
+                        try:
+                            a2a_task = _send_creator_a2a_task(
+                                settings=settings,
+                                base_url=creator_a2a_base_url,
+                                creator_agent_id=creator_agent_id,
+                                message=bridge_message,
+                                context=creator_context,
+                            )
+                        except CreatorA2AClientError as exc:
+                            raise _problem(
+                                status.HTTP_502_BAD_GATEWAY,
+                                "A2A_CREATOR_AGENT_UNAVAILABLE",
+                                f"Creator A2A counter failed: {exc}",
+                            ) from exc
                         persisted_messages.append(
                             {
-                                "messageId": response_message_id,
+                                "messageId": bridge_message_id,
                                 "contextId": context_id,
                                 "taskId": task_id,
-                                "role": "ROLE_AGENT",
-                                "sequence": 4,
-                                "payload": creator_decision_document,
-                                "a2aMessage": response_message.model_dump(
+                                "role": "ROLE_USER",
+                                "sequence": 3,
+                                "payload": bridge_payload.model_dump(by_alias=True, mode="json"),
+                                "a2aMessage": bridge_message.model_dump(
                                     by_alias=True,
                                     mode="json",
                                 ),
                                 "createdAt": now,
                             }
                         )
-                    persisted_decisions.append(
-                        {
-                            "decisionId": f"decision-{uuid4()}",
-                            "messageId": response_message_id,
-                            "type": decision_type.value,
-                            "policyDecision": creator_decision_document.get("policyDecision"),
-                            "createdAt": now,
-                        }
-                    )
-                    if decision_type != NegotiationMessageType.COUNTER:
-                        final_brand_decision = validate_brand_terms(
-                            promotion,
-                            creator,
-                            AgreementTerms.model_validate(current_terms),
-                            current_round=3,
+                        response_message = a2a_task.status.message
+                        try:
+                            creator_decision_document = first_part_data(response_message)
+                        except CreatorA2AClientError as exc:
+                            raise _problem(
+                                status.HTTP_409_CONFLICT,
+                                "INVALID_STATE_TRANSITION",
+                                f"Creator A2A counter response is invalid: {exc}",
+                            ) from exc
+                        decision_type = _decision_type_from_document(creator_decision_document)
+                        _trace_negotiation_turn(run_span, "creator", creator_decision_document)
+                        response_message_id = (
+                            response_message.message_id
+                            if response_message
+                            else f"message-{uuid4()}"
                         )
-                    else:
+                        response_terms = creator_decision_document.get("terms")
+                        current_terms = (
+                            response_terms if isinstance(response_terms, dict) else current_terms
+                        )
+                        if response_message is not None:
+                            persisted_messages.append(
+                                {
+                                    "messageId": response_message_id,
+                                    "contextId": context_id,
+                                    "taskId": task_id,
+                                    "role": "ROLE_AGENT",
+                                    "sequence": 4,
+                                    "payload": creator_decision_document,
+                                    "a2aMessage": response_message.model_dump(
+                                        by_alias=True,
+                                        mode="json",
+                                    ),
+                                    "createdAt": now,
+                                }
+                            )
+                        persisted_decisions.append(
+                            {
+                                "decisionId": f"decision-{uuid4()}",
+                                "messageId": response_message_id,
+                                "type": decision_type.value,
+                                "policyDecision": creator_decision_document.get("policyDecision"),
+                                "createdAt": now,
+                            }
+                        )
+                        if decision_type != NegotiationMessageType.COUNTER:
+                            final_brand_decision = validate_brand_terms(
+                                promotion,
+                                creator,
+                                AgreementTerms.model_validate(current_terms),
+                                current_round=3,
+                            )
+                        else:
+                            counter_terms = AgreementTerms.model_validate(current_terms)
+                            final_brand_decision = validate_brand_terms(
+                                promotion,
+                                creator,
+                                counter_terms,
+                                current_round=3,
+                            )
+                        persisted_decisions.append(
+                            {
+                                "decisionId": f"decision-{uuid4()}",
+                                "messageId": response_message_id,
+                                "type": "BRAND_POLICY_EVALUATION",
+                                "policyDecision": final_brand_decision.model_dump(
+                                    by_alias=True,
+                                    mode="json",
+                                ),
+                                "createdAt": now,
+                            }
+                        )
+                    if (
+                        decision_type == NegotiationMessageType.COUNTER
+                        and final_brand_decision.allowed
+                    ):
                         counter_terms = AgreementTerms.model_validate(current_terms)
-                        final_brand_decision = validate_brand_terms(
-                            promotion,
-                            creator,
-                            counter_terms,
-                            current_round=3,
+                        changed_fields_value = creator_decision_document.get("changedFields")
+                        changed_fields = (
+                            [item for item in changed_fields_value if isinstance(item, str)]
+                            if isinstance(changed_fields_value, list)
+                            else []
                         )
-                    persisted_decisions.append(
-                        {
-                            "decisionId": f"decision-{uuid4()}",
-                            "messageId": response_message_id,
-                            "type": "BRAND_POLICY_EVALUATION",
-                            "policyDecision": final_brand_decision.model_dump(
-                                by_alias=True,
-                                mode="json",
-                            ),
-                            "createdAt": now,
-                        }
-                    )
-                if decision_type == NegotiationMessageType.COUNTER and final_brand_decision.allowed:
-                    counter_terms = AgreementTerms.model_validate(current_terms)
-                    changed_fields_value = creator_decision_document.get("changedFields")
-                    changed_fields = (
-                        [item for item in changed_fields_value if isinstance(item, str)]
-                        if isinstance(changed_fields_value, list)
-                        else []
-                    )
-                    accept_payload = NegotiationPayload(
-                        type=NegotiationMessageType.ACCEPT,
-                        round=3 if len(persisted_messages) >= 4 else 2,
-                        promotion=promotion,
-                        terms=counter_terms,
-                        changedFields=changed_fields,
-                        rationale="Brand policy accepted Creator counteroffer.",
-                        display=_brand_negotiation_display(
-                            settings=settings,
-                            message_type=NegotiationMessageType.ACCEPT,
-                            terms=counter_terms,
+                        accept_payload = NegotiationPayload(
+                            type=NegotiationMessageType.ACCEPT,
+                            round=3 if len(persisted_messages) >= 4 else 2,
                             promotion=promotion,
-                            rationale="권한 범위 안이라 사람 승인 없이 최종 조건을 수락합니다.",
-                        ),
-                    )
-                    accept_message_id = f"message-{uuid4()}"
-                    accept_message = A2AMessage(
-                        messageId=accept_message_id,
-                        contextId=context_id,
-                        taskId=task_id,
-                        role=A2ARole.USER,
-                        parts=[
-                            A2APart(
-                                mediaType="application/json",
-                                data=accept_payload.model_dump(by_alias=True, mode="json"),
-                            )
-                        ],
-                    )
-                    try:
-                        a2a_task = _send_creator_a2a_task(
-                            settings=settings,
-                            base_url=creator_a2a_base_url,
-                            creator_agent_id=creator_agent_id,
-                            message=accept_message,
-                            context=creator_context,
+                            terms=counter_terms,
+                            changedFields=changed_fields,
+                            rationale="Brand policy accepted Creator counteroffer.",
+                            display=_brand_negotiation_display(
+                                settings=settings,
+                                message_type=NegotiationMessageType.ACCEPT,
+                                terms=counter_terms,
+                                promotion=promotion,
+                                rationale="권한 범위 안이라 사람 승인 없이 최종 조건을 수락합니다.",
+                            ),
                         )
-                    except CreatorA2AClientError as exc:
-                        raise _problem(
-                            status.HTTP_502_BAD_GATEWAY,
-                            "A2A_CREATOR_AGENT_UNAVAILABLE",
-                            f"Creator A2A accept failed: {exc}",
-                        ) from exc
-                    persisted_messages.append(
-                        {
-                            "messageId": accept_message_id,
-                            "contextId": context_id,
-                            "taskId": task_id,
-                            "role": "ROLE_USER",
-                            "sequence": len(persisted_messages) + 1,
-                            "payload": accept_payload.model_dump(by_alias=True, mode="json"),
-                            "a2aMessage": accept_message.model_dump(by_alias=True, mode="json"),
-                            "createdAt": now,
-                        }
-                    )
-                    response_message = a2a_task.status.message
-                    try:
-                        creator_decision_document = first_part_data(response_message)
-                    except CreatorA2AClientError as exc:
-                        raise _problem(
-                            status.HTTP_409_CONFLICT,
-                            "INVALID_STATE_TRANSITION",
-                            f"Creator A2A final response is invalid: {exc}",
-                        ) from exc
-                    decision_type = _decision_type_from_document(creator_decision_document)
-                    response_message_id = (
-                        response_message.message_id if response_message else f"message-{uuid4()}"
-                    )
-                    response_terms = creator_decision_document.get("terms")
-                    current_terms = (
-                        response_terms if isinstance(response_terms, dict) else current_terms
-                    )
-                    if response_message is not None:
+                        accept_message_id = f"message-{uuid4()}"
+                        accept_message = A2AMessage(
+                            messageId=accept_message_id,
+                            contextId=context_id,
+                            taskId=task_id,
+                            role=A2ARole.USER,
+                            parts=[
+                                A2APart(
+                                    mediaType="application/json",
+                                    data=accept_payload.model_dump(by_alias=True, mode="json"),
+                                )
+                            ],
+                        )
+                        _trace_negotiation_turn(
+                            run_span, "brand", accept_payload.model_dump(by_alias=True, mode="json")
+                        )
+                        try:
+                            a2a_task = _send_creator_a2a_task(
+                                settings=settings,
+                                base_url=creator_a2a_base_url,
+                                creator_agent_id=creator_agent_id,
+                                message=accept_message,
+                                context=creator_context,
+                            )
+                        except CreatorA2AClientError as exc:
+                            raise _problem(
+                                status.HTTP_502_BAD_GATEWAY,
+                                "A2A_CREATOR_AGENT_UNAVAILABLE",
+                                f"Creator A2A accept failed: {exc}",
+                            ) from exc
                         persisted_messages.append(
                             {
-                                "messageId": response_message_id,
+                                "messageId": accept_message_id,
                                 "contextId": context_id,
                                 "taskId": task_id,
-                                "role": "ROLE_AGENT",
+                                "role": "ROLE_USER",
                                 "sequence": len(persisted_messages) + 1,
-                                "payload": creator_decision_document,
-                                "a2aMessage": response_message.model_dump(
-                                    by_alias=True,
-                                    mode="json",
-                                ),
+                                "payload": accept_payload.model_dump(by_alias=True, mode="json"),
+                                "a2aMessage": accept_message.model_dump(by_alias=True, mode="json"),
                                 "createdAt": now,
                             }
                         )
-                    persisted_decisions.append(
-                        {
-                            "decisionId": f"decision-{uuid4()}",
-                            "messageId": response_message_id,
-                            "type": decision_type.value,
-                            "policyDecision": creator_decision_document.get("policyDecision"),
-                            "createdAt": now,
-                        }
-                    )
-        negotiation_status = _negotiation_status(decision_type)
-        artifact = a2a_task.artifacts[0] if a2a_task.artifacts else None
-        artifact_id = artifact.artifact_id if artifact else f"artifact-{uuid4()}"
-        if decision_type == NegotiationMessageType.ACCEPT and artifact is None:
-            raise _problem(
-                status.HTTP_409_CONFLICT,
-                "INVALID_STATE_TRANSITION",
-                "Accepted A2A negotiation is missing an Agreement Artifact.",
+                        response_message = a2a_task.status.message
+                        try:
+                            creator_decision_document = first_part_data(response_message)
+                        except CreatorA2AClientError as exc:
+                            raise _problem(
+                                status.HTTP_409_CONFLICT,
+                                "INVALID_STATE_TRANSITION",
+                                f"Creator A2A final response is invalid: {exc}",
+                            ) from exc
+                        decision_type = _decision_type_from_document(creator_decision_document)
+                        _trace_negotiation_turn(run_span, "creator", creator_decision_document)
+                        response_message_id = (
+                            response_message.message_id
+                            if response_message
+                            else f"message-{uuid4()}"
+                        )
+                        response_terms = creator_decision_document.get("terms")
+                        current_terms = (
+                            response_terms if isinstance(response_terms, dict) else current_terms
+                        )
+                        if response_message is not None:
+                            persisted_messages.append(
+                                {
+                                    "messageId": response_message_id,
+                                    "contextId": context_id,
+                                    "taskId": task_id,
+                                    "role": "ROLE_AGENT",
+                                    "sequence": len(persisted_messages) + 1,
+                                    "payload": creator_decision_document,
+                                    "a2aMessage": response_message.model_dump(
+                                        by_alias=True,
+                                        mode="json",
+                                    ),
+                                    "createdAt": now,
+                                }
+                            )
+                        persisted_decisions.append(
+                            {
+                                "decisionId": f"decision-{uuid4()}",
+                                "messageId": response_message_id,
+                                "type": decision_type.value,
+                                "policyDecision": creator_decision_document.get("policyDecision"),
+                                "createdAt": now,
+                            }
+                        )
+            negotiation_status = _negotiation_status(decision_type)
+            artifact = a2a_task.artifacts[0] if a2a_task.artifacts else None
+            artifact_id = artifact.artifact_id if artifact else f"artifact-{uuid4()}"
+            if decision_type == NegotiationMessageType.ACCEPT and artifact is None:
+                raise _problem(
+                    status.HTTP_409_CONFLICT,
+                    "INVALID_STATE_TRANSITION",
+                    "Accepted A2A negotiation is missing an Agreement Artifact.",
+                )
+            agreement_source = (
+                {**_artifact_part_data(artifact), "type": decision_type.value}
+                if artifact is not None
+                else creator_decision_document
             )
-        agreement_source = (
-            {**_artifact_part_data(artifact), "type": decision_type.value}
-            if artifact is not None
-            else creator_decision_document
-        )
-        negotiation: dict[str, object] = {
-            "negotiationId": negotiation_id,
-            "matchRunId": match_run_id,
-            "matchCandidateId": match_candidate_id,
-            "matchCandidatePath": candidate_path,
-            "promotionId": promotion.promotion_id,
-            "promotionTitle": promotion.title,
-            "productName": promotion_document.get("productName") or promotion.title,
-            "brandId": promotion.brand_id,
-            "brandAgentId": promotion.brand_agent_id,
-            "brandDisplayName": _brand_display_name(brand, fallback=promotion.brand_id),
-            "brandSnapshot": _public_brand_snapshot(brand),
-            "creatorId": creator.creator_id,
-            "creatorAgentId": creator_agent_id,
-            "creatorDisplayName": creator.display_name,
-            "creatorSnapshot": _public_creator_snapshot(creator),
-            "promotionSnapshot": _public_promotion_snapshot(promotion_document),
-            "contextId": context_id,
-            "taskId": task_id,
-            "status": negotiation_status,
-            "currentRound": _current_negotiation_round(persisted_messages),
-            "maxRounds": promotion.autonomy.max_negotiation_rounds,
-            "currentTerms": current_terms,
-            "initialAmountUsdc": terms.compensation.base_amount_usdc,
-            "currentAmountUsdc": _terms_base_amount_usdc(current_terms),
-            "workItems": _terms_work_items(current_terms),
-            "deliverableSummary": _terms_deliverable_summary(current_terms),
-            "brandPolicySnapshot": {
-                "ruleVersion": final_brand_decision.rule_version,
-                "decision": final_brand_decision.model_dump(by_alias=True, mode="json"),
-            },
-            "creatorPolicySnapshot": {"redacted": True},
-            "lastMessageId": response_message_id,
-            "createdAt": now,
-            "updatedAt": now,
-        }
-        repository.save_raw_document(FirestorePaths.negotiation(negotiation_id), negotiation)
-        repository.save_raw_document(
-            FirestorePaths.a2a_task(task_id),
-            {
-                **a2a_task.model_dump(by_alias=True, mode="json"),
-                "taskId": task_id,
-                "contextId": context_id,
+            negotiation: dict[str, object] = {
                 "negotiationId": negotiation_id,
+                "matchRunId": match_run_id,
+                "matchCandidateId": match_candidate_id,
+                "matchCandidatePath": candidate_path,
+                "promotionId": promotion.promotion_id,
+                "promotionTitle": promotion.title,
+                "productName": promotion_document.get("productName") or promotion.title,
+                "brandId": promotion.brand_id,
+                "brandAgentId": promotion.brand_agent_id,
+                "brandDisplayName": _brand_display_name(brand, fallback=promotion.brand_id),
+                "brandSnapshot": _public_brand_snapshot(brand),
+                "creatorId": creator.creator_id,
+                "creatorAgentId": creator_agent_id,
+                "creatorDisplayName": creator.display_name,
+                "creatorSnapshot": _public_creator_snapshot(creator),
+                "promotionSnapshot": _public_promotion_snapshot(promotion_document),
+                "contextId": context_id,
+                "taskId": task_id,
+                "traceId": run_span.trace_id,
+                "status": negotiation_status,
+                "currentRound": _current_negotiation_round(persisted_messages),
+                "maxRounds": promotion.autonomy.max_negotiation_rounds,
+                "currentTerms": current_terms,
+                "initialAmountUsdc": terms.compensation.base_amount_usdc,
+                "currentAmountUsdc": _terms_base_amount_usdc(current_terms),
+                "workItems": _terms_work_items(current_terms),
+                "deliverableSummary": _terms_deliverable_summary(current_terms),
+                "brandPolicySnapshot": {
+                    "ruleVersion": final_brand_decision.rule_version,
+                    "decision": final_brand_decision.model_dump(by_alias=True, mode="json"),
+                },
+                "creatorPolicySnapshot": {"redacted": True},
+                "lastMessageId": response_message_id,
                 "createdAt": now,
                 "updatedAt": now,
-            },
-        )
-        _write_a2a_task_events(
-            repository,
-            task_id=task_id,
-            negotiation_id=negotiation_id,
-            persisted_messages=persisted_messages,
-            final_state=str(a2a_task.status.state.value),
-            created_at=now,
-        )
-        for message_document in persisted_messages:
-            message_document["transport"] = (
-                "HTTP_A2A" if settings.creator_a2a_mode == "http" else "IN_PROCESS_A2A"
-            )
-            message_document["a2aEndpoint"] = creator_a2a_base_url
+            }
+            repository.save_raw_document(FirestorePaths.negotiation(negotiation_id), negotiation)
             repository.save_raw_document(
-                FirestorePaths.negotiation_message(
-                    negotiation_id,
-                    _require_document_str(message_document, "messageId"),
-                ),
-                message_document,
-            )
-        for decision_document in persisted_decisions:
-            repository.save_raw_document(
-                FirestorePaths.negotiation_decision(
-                    negotiation_id,
-                    _require_document_str(decision_document, "decisionId"),
-                ),
-                decision_document,
-            )
-        repository.save_raw_document(
-            candidate_path,
-            {
-                **candidate,
-                "negotiationId": negotiation_id,
-                "negotiationPath": FirestorePaths.negotiation(negotiation_id),
-                "negotiationStatus": negotiation_status,
-                "updatedAt": now,
-            },
-        )
-        agreement = _agreement_document(
-            negotiation=negotiation,
-            decision=agreement_source,
-            artifact_id=artifact_id,
-            task_id=task_id,
-            created_at=now,
-            promotion=promotion_document,
-            brand=brand,
-            creator=creator,
-        )
-        if artifact is not None:
-            repository.save_raw_document(
-                FirestorePaths.a2a_task_artifact(task_id, artifact.artifact_id),
-                _a2a_artifact_document(
-                    artifact=artifact,
-                    task_id=task_id,
-                    negotiation_id=negotiation_id,
-                    created_at=now,
-                ),
-            )
-        if agreement is not None:
-            repository.save_raw_document(
-                FirestorePaths.agreement(str(agreement["agreementId"])),
-                agreement,
-            )
-            _write_agreement_milestones(repository, agreement)
-        if agent_card is not None:
-            _append_promotion_event(
-                repository,
-                promotion_id=promotion_id,
-                event_type="A2A_AGENT_CARD_DISCOVERED",
-                data={
-                    "creatorAgentId": creator_agent_id,
-                    "name": agent_card.get("name"),
-                    "version": agent_card.get("version"),
+                FirestorePaths.a2a_task(task_id),
+                {
+                    **a2a_task.model_dump(by_alias=True, mode="json"),
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "negotiationId": negotiation_id,
+                    "createdAt": now,
+                    "updatedAt": now,
                 },
             )
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type="A2A_OFFER_SENT",
-            data={
-                "negotiationId": negotiation_id,
-                "contextId": context_id,
-                "taskId": task_id,
-                "messageId": offer_message_id,
-            },
-        )
-        if any(
-            decision["type"] == NegotiationMessageType.COUNTER.value
-            for decision in persisted_decisions
-        ):
+            _write_a2a_task_events(
+                repository,
+                task_id=task_id,
+                negotiation_id=negotiation_id,
+                persisted_messages=persisted_messages,
+                final_state=str(a2a_task.status.state.value),
+                created_at=now,
+            )
+            for message_document in persisted_messages:
+                message_document["transport"] = (
+                    "HTTP_A2A" if settings.creator_a2a_mode == "http" else "IN_PROCESS_A2A"
+                )
+                message_document["a2aEndpoint"] = creator_a2a_base_url
+                repository.save_raw_document(
+                    FirestorePaths.negotiation_message(
+                        negotiation_id,
+                        _require_document_str(message_document, "messageId"),
+                    ),
+                    message_document,
+                )
+            for decision_document in persisted_decisions:
+                repository.save_raw_document(
+                    FirestorePaths.negotiation_decision(
+                        negotiation_id,
+                        _require_document_str(decision_document, "decisionId"),
+                    ),
+                    decision_document,
+                )
+            repository.save_raw_document(
+                candidate_path,
+                {
+                    **candidate,
+                    "negotiationId": negotiation_id,
+                    "negotiationPath": FirestorePaths.negotiation(negotiation_id),
+                    "negotiationStatus": negotiation_status,
+                    "updatedAt": now,
+                },
+            )
+            agreement = _agreement_document(
+                negotiation=negotiation,
+                decision=agreement_source,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                created_at=now,
+                promotion=promotion_document,
+                brand=brand,
+                creator=creator,
+            )
+            if artifact is not None:
+                repository.save_raw_document(
+                    FirestorePaths.a2a_task_artifact(task_id, artifact.artifact_id),
+                    _a2a_artifact_document(
+                        artifact=artifact,
+                        task_id=task_id,
+                        negotiation_id=negotiation_id,
+                        created_at=now,
+                    ),
+                )
+            if agreement is not None:
+                repository.save_raw_document(
+                    FirestorePaths.agreement(str(agreement["agreementId"])),
+                    agreement,
+                )
+                _write_agreement_milestones(repository, agreement)
+            if agent_card is not None:
+                _append_promotion_event(
+                    repository,
+                    promotion_id=promotion_id,
+                    event_type="A2A_AGENT_CARD_DISCOVERED",
+                    data={
+                        "creatorAgentId": creator_agent_id,
+                        "name": agent_card.get("name"),
+                        "version": agent_card.get("version"),
+                    },
+                )
             _append_promotion_event(
                 repository,
                 promotion_id=promotion_id,
-                event_type="A2A_COUNTER_RECEIVED",
+                event_type="A2A_OFFER_SENT",
                 data={
                     "negotiationId": negotiation_id,
                     "contextId": context_id,
                     "taskId": task_id,
+                    "messageId": offer_message_id,
                 },
             )
-        if len(persisted_messages) >= 3:
+            if any(
+                decision["type"] == NegotiationMessageType.COUNTER.value
+                for decision in persisted_decisions
+            ):
+                _append_promotion_event(
+                    repository,
+                    promotion_id=promotion_id,
+                    event_type="A2A_COUNTER_RECEIVED",
+                    data={
+                        "negotiationId": negotiation_id,
+                        "contextId": context_id,
+                        "taskId": task_id,
+                    },
+                )
+            if len(persisted_messages) >= 3:
+                _append_promotion_event(
+                    repository,
+                    promotion_id=promotion_id,
+                    event_type="A2A_ACCEPT_SENT",
+                    data={
+                        "negotiationId": negotiation_id,
+                        "contextId": context_id,
+                        "taskId": task_id,
+                    },
+                )
+            if agreement is not None:
+                _append_promotion_event(
+                    repository,
+                    promotion_id=promotion_id,
+                    event_type="AGREEMENT_CREATED",
+                    data={
+                        "negotiationId": negotiation_id,
+                        "agreementId": agreement["agreementId"],
+                        "taskId": task_id,
+                    },
+                )
             _append_promotion_event(
                 repository,
                 promotion_id=promotion_id,
-                event_type="A2A_ACCEPT_SENT",
+                event_type="NEGOTIATION_STARTED",
                 data={
+                    "matchRunId": match_run_id,
                     "negotiationId": negotiation_id,
-                    "contextId": context_id,
-                    "taskId": task_id,
+                    "status": negotiation_status,
                 },
             )
-        if agreement is not None:
-            _append_promotion_event(
-                repository,
-                promotion_id=promotion_id,
-                event_type="AGREEMENT_CREATED",
-                data={
-                    "negotiationId": negotiation_id,
-                    "agreementId": agreement["agreementId"],
-                    "taskId": task_id,
-                },
+            run_span.set(
+                outcome=negotiation_status,
+                rounds=negotiation["currentRound"],
+                finalAmountUsdc=negotiation["currentAmountUsdc"],
+                agreementId=agreement["agreementId"] if agreement is not None else None,
+                taskId=task_id,
+                taskState=a2a_task.status.state.value,
+                turns=len(persisted_messages),
             )
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type="NEGOTIATION_STARTED",
-            data={
-                "matchRunId": match_run_id,
-                "negotiationId": negotiation_id,
-                "status": negotiation_status,
-            },
-        )
-        return _ok({"negotiation": negotiation, "agreement": agreement})
+            response = _ok({"negotiation": negotiation, "agreement": agreement})
+            cast(dict[str, object], response["meta"])["traceId"] = run_span.trace_id
+            return response
 
     @router.get("/negotiations/{negotiation_id}")
     def get_negotiation(negotiation_id: str) -> dict[str, object]:
@@ -5363,6 +5503,61 @@ def _require_dev_admin(
             "Dev admin access requires admin claim or allowlist.",
         )
     return auth_user
+
+
+def _optional_brand_user(
+    repository: KnotRepository,
+    settings: Settings,
+    token_verifier: FirebaseTokenVerifier,
+    authorization: str | None,
+) -> dict[str, object] | None:
+    """Brand-side agent-runtime routes (campaigns, approval queue).
+
+    Same rule as `/agreements/{id}/escrow:lock` and milestone release: a bearer token,
+    when sent, must verify (401) and belong to an onboarded Brand (403/409 like `/brand/*`).
+    Without one the call is the anonymous agent-runtime path (local demo, seeded
+    `promotion-001` has no owner) unless `KNOT_CAMPAIGN_AUTH_REQUIRED` turns it off (401).
+    """
+    if not authorization:
+        if settings.campaign_auth_required:
+            raise _problem(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHENTICATED",
+                "Authorization bearer token is required for campaign and approval routes.",
+            )
+        return None
+    auth_user = _require_auth_user(token_verifier, authorization)
+    return _require_completed_role(repository, auth_user, "BRAND")
+
+
+def _optional_promotion_owner(
+    repository: KnotRepository,
+    settings: Settings,
+    token_verifier: FirebaseTokenVerifier,
+    authorization: str | None,
+    promotion_id: str,
+) -> dict[str, object] | None:
+    """`_optional_brand_user` plus: the Brand must own the promotion (404/403 as `/brand/*`)."""
+    user = _optional_brand_user(repository, settings, token_verifier, authorization)
+    if user is not None:
+        _require_brand_promotion_document(repository, user, promotion_id)
+    return user
+
+
+def _approvals_for_brand(
+    repository: KnotRepository,
+    approvals: list[dict[str, object]],
+    user: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Anonymous (dev) sees the whole queue; a Brand sees only its own promotions'."""
+    if user is None:
+        return approvals
+    brand_id = _require_document_str(user, "brandId")
+    return [
+        approval
+        for approval in approvals
+        if _promotion_belongs_to_brand(repository, approval.get("promotionId"), brand_id)
+    ]
 
 
 def _require_user_document(repository: KnotRepository, uid: str) -> dict[str, object]:
@@ -8746,7 +8941,69 @@ def _require_document_str(document: dict[str, object], field_name: str) -> str:
 _LOCAL_CREATOR_A2A_STORES: dict[str, InMemoryA2ATaskStore] = {}
 
 
+def _trace_negotiation_turn(run_span: Span, role: str, payload: dict[str, object]) -> None:
+    """One `turn` event per negotiation message, same shape as the campaign path.
+
+    Brand turns are recorded when the message is sent and creator turns when the reply
+    is parsed, so a failed send still shows what was offered. Only public message fields
+    are read: type/round/amount and which provider wrote the display text; the policy
+    decision contributes just its `allowed` verdict.
+    """
+    display = payload.get("display")
+    provider = (
+        display.get("messageProvider") if isinstance(display, dict) else None
+    ) or payload.get("rationaleProvider")
+    decision = payload.get("policyDecision")
+    terms = payload.get("terms")
+    run_span.event(
+        "turn",
+        round=payload.get("round"),
+        role=role,
+        type=payload.get("type"),
+        amountUsdc=_terms_base_amount_usdc(terms) if isinstance(terms, dict) else None,
+        messageProvider=provider,
+        allowed=decision.get("allowed") if isinstance(decision, dict) else None,
+    )
+
+
 def _send_creator_a2a_task(
+    *,
+    settings: Settings,
+    base_url: str,
+    creator_agent_id: str,
+    message: A2AMessage,
+    context: CreatorNegotiationContext,
+) -> A2ATask:
+    """Send one brand message to the creator agent under an `a2a.send` span.
+
+    HTTP mode forwards the trace headers, so the creator process's `creator.decide` nests
+    under this span; local mode (`InMemoryA2ATaskStore`) opens it in-process.
+    """
+    data = message.parts[0].data if message.parts else None
+    data = data if isinstance(data, dict) else {}
+    with span(
+        "a2a.send",
+        creatorAgentId=creator_agent_id,
+        type=data.get("type"),
+        round=data.get("round"),
+        messageId=message.message_id,
+        taskId=message.task_id,
+    ) as send_span:
+        task = _send_creator_a2a_task_untraced(
+            settings=settings,
+            base_url=base_url,
+            creator_agent_id=creator_agent_id,
+            message=message,
+            context=context,
+        )
+        reply = first_part_data(task.status.message) if task.status.message else {}
+        send_span.set(
+            taskId=task.id, taskState=task.status.state.value, replyType=reply.get("type")
+        )
+        return task
+
+
+def _send_creator_a2a_task_untraced(
     *,
     settings: Settings,
     base_url: str,
@@ -8789,20 +9046,35 @@ def _discover_creator_agent_card(
     settings: Settings,
     base_url: str,
 ) -> dict[str, object] | None:
-    if settings.creator_a2a_mode != "http":
-        return None
-    try:
-        return CreatorA2AClient(
-            base_url,
-            timeout_seconds=settings.creator_a2a_timeout_seconds,
-            service_token=settings.a2a_service_token,
-        ).agent_card()
-    except CreatorA2AClientError as exc:
-        raise _problem(
-            status.HTTP_502_BAD_GATEWAY,
-            "A2A_CREATOR_AGENT_UNAVAILABLE",
-            f"Creator A2A AgentCard discovery failed: {exc}",
-        ) from exc
+    """Fetch the creator AgentCard (HTTP mode) under an `a2a.agent_card` span.
+
+    Local mode has no card to fetch; the span still records that discovery was skipped so
+    the two modes read the same in a trace tree.
+    """
+    with span("a2a.agent_card", mode=settings.creator_a2a_mode, baseUrl=base_url) as card_span:
+        if settings.creator_a2a_mode != "http":
+            card_span.set(discovered=False)
+            return None
+        try:
+            card = CreatorA2AClient(
+                base_url,
+                timeout_seconds=settings.creator_a2a_timeout_seconds,
+                service_token=settings.a2a_service_token,
+            ).agent_card()
+        except CreatorA2AClientError as exc:
+            raise _problem(
+                status.HTTP_502_BAD_GATEWAY,
+                "A2A_CREATOR_AGENT_UNAVAILABLE",
+                f"Creator A2A AgentCard discovery failed: {exc}",
+            ) from exc
+        skills = card.get("skills")
+        card_span.set(
+            discovered=True,
+            name=card.get("name"),
+            version=card.get("version"),
+            skillCount=len(skills) if isinstance(skills, list) else None,
+        )
+        return card
 
 
 def _require_creator_agent_registry_entry(
@@ -9271,6 +9543,56 @@ def _candidate_explanation(
     )
 
 
+_PAYSH_DISABLED_MODES = frozenset({"off", "disabled", "local", "none"})
+
+
+def _traced_paid_verification(
+    *,
+    repository: KnotRepository,
+    settings: Settings,
+    match_run_id: str,
+    promotion_id: str,
+    brand_agent_id: str,
+    selected_creator_agent_id: str | None,
+) -> dict[str, object]:
+    """`_run_paid_verification` under a `match.verify` span when pay.sh is enabled.
+
+    Only the outcome is recorded (provider/mode/status/continuation/amount); receipts,
+    wallet details and the raw pay.sh response never reach the trace.
+    """
+
+    def run() -> dict[str, object]:
+        return _run_paid_verification(
+            repository=repository,
+            settings=settings,
+            match_run_id=match_run_id,
+            promotion_id=promotion_id,
+            brand_agent_id=brand_agent_id,
+            selected_creator_agent_id=selected_creator_agent_id,
+        )
+
+    mode = settings.paysh_mode.lower()
+    if mode in _PAYSH_DISABLED_MODES:
+        return run()
+    with span(
+        "match.verify",
+        provider="pay.sh",
+        protocol="x402",
+        mode=mode,
+        matchRunId=match_run_id,
+        selectedCreatorAgentId=selected_creator_agent_id,
+    ) as verify_span:
+        result = run()
+        quote = result.get("quote")
+        verify_span.set(
+            status=result.get("status"),
+            continuation=result.get("continuation"),
+            idempotencyReused=bool(result.get("idempotencyReused")),
+            amountUsdc=quote.get("amountUsdc") if isinstance(quote, dict) else None,
+        )
+        return result
+
+
 def _run_paid_verification(
     *,
     repository: KnotRepository,
@@ -9316,7 +9638,7 @@ def _run_paid_verification(
         "failurePolicy": settings.paysh_failure_policy,
         "nonAuthoritative": True,
     }
-    if mode in {"off", "disabled", "local", "none"}:
+    if mode in _PAYSH_DISABLED_MODES:
         return _record_paysh_operation(
             repository,
             operation_id=operation_id,

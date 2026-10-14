@@ -14,6 +14,7 @@ export const appRoutes = [
   "/brand/negotiations/[negotiationId]",
   "/brand/agreements/[agreementId]",
   "/brand/campaign",
+  "/brand/approvals",
   "/brand/products/new",
   "/brand/negotiate",
   "/brand/result",

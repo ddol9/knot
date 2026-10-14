@@ -153,6 +153,12 @@ export type RunCampaignResponse = {
   agreements: Array<Record<string, unknown>>;
 };
 
+/** `POST /promotions/{id}/campaigns/{campaignId}:cancel` 응답. 실행 중이 아니면 404. */
+export type CancelCampaignResponse = {
+  campaignId: string;
+  status: "CANCELING";
+};
+
 /* ---------- SSE event payloads (each `data:` line) ---------- */
 
 export type CampaignStatusEvent = {
@@ -223,6 +229,17 @@ export type EscrowFailedEvent = {
   detail?: string | null;
 };
 
+/** 거버넌스가 에스크로 락을 사람 뒤로 미뤘을 때 (escrow_* 대신 발생). docs/09 부록 5. */
+export type ApprovalRequiredEvent = {
+  creatorAgentId: string;
+  agreementId: string;
+  approvalId: string;
+  amountUsdc: number;
+  campaignCommittedUsdc: number;
+  reasons: string[];
+  ruleVersion: string;
+};
+
 export type CampaignResultEvent = {
   result: CampaignResult;
 };
@@ -244,6 +261,7 @@ export type CampaignStreamEvent =
   | { name: "escrow_locked"; data: EscrowLockedEvent }
   | { name: "escrow_skipped"; data: EscrowSkippedEvent }
   | { name: "escrow_failed"; data: EscrowFailedEvent }
+  | { name: "approval_required"; data: ApprovalRequiredEvent }
   | { name: "campaign_result"; data: CampaignResultEvent }
   | { name: "error"; data: CampaignErrorEvent };
 
@@ -261,6 +279,7 @@ export const CAMPAIGN_STREAM_EVENT_NAMES: readonly CampaignStreamEventName[] = [
   "escrow_locked",
   "escrow_skipped",
   "escrow_failed",
+  "approval_required",
   "campaign_result",
   "error",
 ];

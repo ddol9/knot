@@ -38,6 +38,17 @@ Firebase ID token or existing verified auth mechanism
 
 Internal worker/A2A/Web3 calls use existing service authentication. Do not expose private worker endpoints publicly to simplify development.
 
+Agent-runtime routes on the product API (`POST /agreements/{id}/escrow:lock`, milestone release, campaign routes `POST /promotions/{id}/campaigns` / `GET …/campaigns/stream` / `POST …/campaigns/{cid}:cancel`, and the approval queue `GET /approvals`, `GET /approvals/{id}`, `:approve`, `:reject`) share one rule (2026-10-14, ExecPlan 14):
+
+```text
+Authorization present → token must verify (401) and be the onboarded Brand that owns
+                        the promotion by brandId (403 FORBIDDEN; same check as /brand/*)
+Authorization absent  → anonymous agent-runtime path (local demo), unless
+                        KNOT_CAMPAIGN_AUTH_REQUIRED=1 closes it (401 UNAUTHENTICATED)
+```
+
+`GET /approvals` with a token returns only the caller's Brand's approvals. Approval decisions carry `decidedBy` (uid, or `null` on the anonymous path) on the document and on the `APPROVAL_GRANTED` / `APPROVAL_REJECTED` timeline events. The Next proxy forwards `Authorization`; the browser `EventSource` used for the campaign stream cannot send it, so the switch stays off until the stream client carries the token.
+
 ## 4. Suggested additive Product API
 
 Exact paths may map to existing routes. The behavior is canonical.

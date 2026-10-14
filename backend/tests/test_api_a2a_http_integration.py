@@ -1,3 +1,5 @@
+import json
+import logging
 import socket
 import threading
 import time
@@ -16,7 +18,8 @@ from libs.repositories.store import InMemoryDocumentStore, KnotRepository
 from libs.settings.config import Settings
 
 
-def test_product_api_runs_real_http_a2a_counter_accept_golden_path() -> None:
+def test_product_api_runs_real_http_a2a_counter_accept_golden_path(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="knot.trace")
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}/a2a/v1"
     token = "test-a2a-token"
@@ -78,9 +81,9 @@ def test_product_api_runs_real_http_a2a_counter_accept_golden_path() -> None:
             )
         )
 
-        match_run = api_client.post("/api/v1/promotions/promotion-001/matches:run").json()[
-            "data"
-        ]["matchRun"]
+        match_run = api_client.post("/api/v1/promotions/promotion-001/matches:run").json()["data"][
+            "matchRun"
+        ]
         response = api_client.post(
             f"/api/v1/match-runs/{match_run['matchRunId']}:start-negotiation"
         )
@@ -123,6 +126,35 @@ def test_product_api_runs_real_http_a2a_counter_accept_golden_path() -> None:
         assert "A2A_COUNTER_RECEIVED" in event_types
         assert "A2A_ACCEPT_SENT" in event_types
         assert "AGREEMENT_CREATED" in event_types
+
+        # The creator agent runs in another thread behind real HTTP; its creator.decide
+        # spans join the brand's trace through X-Trace-Id / X-Parent-Span-Id.
+        trace_id = response.headers["X-Trace-Id"]
+        assert negotiation["traceId"] == trace_id
+        spans = [
+            json.loads(record.getMessage())
+            for record in caplog.records
+            if record.name == "knot.trace"
+        ]
+        by_name: dict[str, list[dict]] = {}
+        for span in spans:
+            by_name.setdefault(span["name"], []).append(span)
+        (run,) = by_name["negotiation.run"]
+        assert run["traceId"] == trace_id
+        assert run["attrs"]["outcome"] == "AGREED"
+        assert run["attrs"]["rounds"] == 3
+        (card,) = by_name["a2a.agent_card"]
+        assert card["parentSpanId"] == run["spanId"]
+        assert card["attrs"]["mode"] == "http"
+        assert card["attrs"]["discovered"] is True
+        sends = by_name["a2a.send"]
+        assert [s["attrs"]["type"] for s in sends] == ["OFFER", "COUNTER", "ACCEPT"]
+        assert {s["parentSpanId"] for s in sends} == {run["spanId"]}
+        decides = [d for d in by_name["creator.decide"] if d["traceId"] == trace_id]
+        assert [d["parentSpanId"] for d in decides] == [s["spanId"] for s in sends]
+        assert [d["attrs"]["decisionType"] for d in decides] == ["COUNTER", "COUNTER", "ACCEPT"]
+        joined = "\n".join(r.getMessage() for r in caplog.records if r.name == "knot.trace")
+        assert "ceiling" not in joined.lower() and '"policy' not in joined.lower()
     finally:
         server.should_exit = True
         thread.join(timeout=5)

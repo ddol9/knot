@@ -480,3 +480,124 @@ campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2
 - [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
 - [ ] 승인·캠페인 라우트 인증
 - [ ] 단일 협상 경로(`start_negotiation`)에도 `negotiation.run` span
+
+## 세션 7b (2026-10-14) — 캠페인·승인 라우트 인증
+
+세션 6c/6 통합의 "승인·캠페인 라우트 인증"을 넣었다. 기준은 같은 `/promotions`·`/agreements` 에이전트 런타임 네임스페이스의 `POST /agreements/{id}/escrow:lock`(캠페인 정산이 그대로 부르는 함수): **헤더가 있으면 반드시 맞아야 하고, 없으면 익명 에이전트 런타임 경로**. `/brand/*`처럼 항상 토큰을 요구하는 건 스위치로 올린다.
+
+### 추가/변경
+- `apps/api/routes.py` — `_optional_brand_user`(토큰 → `_require_completed_role(BRAND)`, 없으면 `None` 또는 401), `_optional_promotion_owner`(+ `_require_brand_promotion_document`: 404/403, `brandId` 기준), `_approvals_for_brand`. 캠페인 라우트 3개(`run_campaign`, `stream_campaign`, `cancel_campaign`)와 승인 라우트 4개에 `Authorization` 헤더. 승인은 `_owned_approval`로 소유권 검사를 상태 검사보다 먼저. `_decide_approval(decided_by=)` → `approvals/{id}.decidedBy`, 타임라인 `APPROVAL_GRANTED|REJECTED.data.decidedBy`, 감사 `actorUid`.
+- `libs/settings/config.py` — `campaign_auth_required` / `KNOT_CAMPAIGN_AUTH_REQUIRED`(기본 off). 켜면 헤더 없는 호출이 7개 라우트 모두 401 `UNAUTHENTICATED`.
+- 상태 코드: 토큰 무효 401 · 브랜드 아님/다른 브랜드 403 `FORBIDDEN` · 온보딩 미완 409 · 프로모션 없음 404. 시드 `promotion-001`(brand-001)은 `user-brand-1`(brand-1) 토큰으로 403 — `ownerUid`가 아니라 `brandId`가 소유권.
+- 테스트 `tests/test_api_auth_campaigns.py`(11). 기존 `test_api_campaigns.py`·`test_api_approvals.py` 무변경 통과. 전체 265 passed / 8 skipped. ExecPlan 14, docs/09 부록 5 "인증", docs/10 §3, `.env.example`.
+
+### 메모
+- 기본값을 "항상 필요"로 두지 않은 이유: 프론트 캠페인 관전이 네이티브 `EventSource`라 `Authorization`을 못 싣는다(프록시는 전달한다). Cloud Run(`KNOT_AUTH_MODE=firebase`)에서 켜면 관전이 즉시 401. 프론트가 스트림에 토큰을 싣게 바꾼 뒤 `KNOT_CAMPAIGN_AUTH_REQUIRED=1`로 올린다.
+- `KNOT_AUTH_MODE`에는 익명 모드가 없다(`firebase`/`emulator` 모두 `/brand/*`는 토큰 필수). 그래서 스위치를 인증 모드에 얹지 않고 별도 불리언으로.
+- 익명 결정의 `decidedBy`는 `null`(가짜 식별자 없음). 독립 브랜드 에이전트(`apps/brand_agent`)와 `matches:run`/`start-negotiation`은 손대지 않음.
+
+### 남은 것 / 다음
+- [ ] 프론트: 캠페인 스트림에 토큰 싣기(fetch 기반 SSE) → `KNOT_CAMPAIGN_AUTH_REQUIRED=1`
+- [ ] 단일 협상 경로(`matches:run`, `start-negotiation`)도 같은 헬퍼로
+- [ ] 승인 큐 화면에서 `decidedBy` 표시
+## 세션 7c (2026-10-14) — 단일 협상 경로 트레이싱
+
+프로덕트 API의 단일 협상 경로(`POST /promotions/{id}/matches:run` → `POST /match-runs/{id}:start-negotiation`)가 캠페인 경로와 **같은 모양의 스팬 트리**를 남기게 했다. 6d의 "남은 것" 마지막 항목. ExecPlan `.agent/execplans/15-single-negotiation-tracing.md`.
+
+### 추가/변경 (`backend/apps/api/routes.py`, 캠페인·승인 라우트는 손대지 않음)
+- `start_negotiation` → `negotiation.run` 스팬(캠페인과 같은 attrs + `negotiationId`, `matchRunId`), 메시지마다 `turn` 이벤트(round/role/type/amountUsdc/messageProvider/allowed). 브랜드 턴은 **보내기 전**, 크리에이터 턴은 **응답 파싱 직후**에 기록(`_trace_negotiation_turn`) — 전송이 실패해도 무엇을 제안했는지 남는다.
+- `_send_creator_a2a_task` → `a2a.send` 스팬(type/round/messageId → taskId/taskState/replyType). 기존 전송 본체는 `_send_creator_a2a_task_untraced`. 로컬 모드의 `creator.decide`(→ `llm.call`)가 그 아래에 붙고, HTTP 모드는 헤더로 크리에이터 프로세스 스팬이 붙는다.
+- `_discover_creator_agent_card` → `a2a.agent_card` 스팬(mode/baseUrl → discovered/name/version/skillCount). 로컬 모드도 `discovered=False`로 찍는다.
+- `run_matches` → `match.run` 스팬(promotionId/matchRunId → queried/ranked/eligible/selected/selectedCreatorAgentId/verificationMode/verificationStatus), pay.sh가 켜져 있으면 자식 `match.verify`(`_traced_paid_verification`: provider/mode → status/continuation/idempotencyReused/amountUsdc, 영수증·지갑 없음).
+- traceId 부착: `negotiations/{id}.traceId`, `matchRuns/{id}.traceId`(이 경로), 두 응답 `meta.traceId`(= `X-Trace-Id`). `brandPolicySnapshot`/`creatorPolicySnapshot`/크리에이터 정책은 스팬에 넘기지 않는다.
+- `scripts/trace_tail.py` 요약 키에 `match.run`, `match.verify`, `a2a.agent_card`.
+- 테스트: `tests/test_tracing_product_path.py` 3개(로컬 합의 트리·응답/문서 traceId 일치, 카운터 흐름 `turn` 6개 순서·금액·offset 단조, 전송 실패 시 `negotiation.run`/`a2a.send` error + OFFER 턴만) + `tests/test_api_a2a_http_integration.py`에 HTTP 경계 중첩 단언(`creator.decide` 3개가 `a2a.send` 3개 아래). 전체 257 passed / 8 skipped / 6 deselected.
+- `docs/agent_ops/02_langsmith_integration.md` 스팬 표에 3개 추가.
+
+### 실측 (워크트리 코드로 API :8181, `KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1`, `python scripts/trace_tail.py /tmp/knot-local/api-trace.log`)
+```text
+trace 8c953e68455740efa48038a16c0b52c5  2 spans  1 ms  [knot-api]
+match.run 1.0 ms ok @knot-api  promotionId=promotion-001 queried=6 ranked=6 selected=1 verificationStatus=SKIPPED
+  match.verify 0.1 ms ok @knot-api  provider=pay.sh mode=sandbox status=SKIPPED continuation=FREE_SIGNALS_ONLY amountUsdc=0.02
+
+trace e2af6368d4dd499a80bd0234b7f52751  5 spans  1 ms  [knot-api]
+negotiation.run 1.3 ms ok @knot-api  creatorAgentId=agent-creator-1 outcome=AGREED rounds=1 finalAmountUsdc=300 agreementId=agreement-978277f1-…
+  · turn +0.29 ms  round=1 role=brand type=OFFER amountUsdc=300 messageProvider=deterministic
+  · turn +0.61 ms  round=1 role=creator type=ACCEPT amountUsdc=300 messageProvider=deterministic allowed=True
+  a2a.agent_card 0.0 ms ok @knot-api  mode=local discovered=False
+  a2a.send 0.3 ms ok @knot-api  type=OFFER round=1 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+    creator.decide 0.2 ms ok @knot-api  tenant=agent-creator-1 messageType=OFFER decisionType=ACCEPT violationCodes=[] taskState=TASK_STATE_COMPLETED
+      llm.call 0.0 ms ok @knot-api  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+```
+응답 헤더 `X-Trace-Id` = `meta.traceId` = `matchRun.traceId` / `negotiation.traceId` 확인.
+
+### 메모
+- `start_negotiation` 본문 전체를 `with start_trace(...), span("negotiation.run", ...)` 아래로 한 단계 들여써서 diff가 크다. 의미 변경은 `turn`/traceId/`meta.traceId` 추가뿐. 같은 함수를 건드리는 브랜치와는 머지 충돌이 날 수 있다.
+- 처음엔 영속 메시지를 append할 때 `turn`을 찍었는데, 전송 실패 테스트에서 브랜드 OFFER 턴이 사라지는 걸 보고 전송 전/파싱 후로 옮겼다(`BrandNegotiator._trace_turn`과 같은 시점).
+- 기존 협상이 있어 그대로 돌려주는 조기 반환은 스팬을 열지 않는다(협상이 돌지 않음).
+
+### 남은 것 / 다음
+- [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
+- [ ] 승인·캠페인 라우트 인증(다른 브랜치 진행 중)
+- [ ] 실제 LangSmith 키로 미러링 확인, Cloud Run `jsonPayload.traceId` 필터 실측
+## 세션 7a (2026-10-14) — 취소 연결 + 승인 큐 화면
+
+브랜드 대시보드에서 사람 개입 루프를 닫았다. "관전 중단"이 서버 캠페인을 실제로 멈추고, 거버넌스가 사람 뒤로 미룬 에스크로 락을 `/brand/approvals`에서 승인/거절한다. `frontend/`만 변경(백엔드 무수정).
+
+### 추가/변경
+- `frontend/src/product/apiClient.ts` — `cancelCampaign(promotionId, campaignId)`, `listApprovals(status?)`, `getApproval(id)`, `approveApproval(id, idempotencyKey?)`, `rejectApproval(id, reason)`, `runningCampaignIdFromProblem`(409 detail 문장에서 campaignId, uuid 우선·type URL 제외), `toApiError` export, `CAMPAIGN_ALREADY_RUNNING` 한국어 문구.
+- `frontend/src/product/campaignTypes.ts` — `ApprovalRequiredEvent`(합집합·이름 목록), `CancelCampaignResponse`. `frontend/src/product/approvalTypes.ts`(신규) — `ApprovalDoc`, 상태 라벨, 규칙 id → 한국어(`GOV_SINGLE_AGREEMENT_OVER_AUTO_LIMIT` "단건 합의 금액이 자동 승인 한도를 넘음", `GOV_CAMPAIGN_TOTAL_OVER_AUTO_LIMIT` "캠페인 누적 확정 금액이 자동 승인 한도를 넘음").
+- `frontend/src/app/brand/campaign/useCampaignStream.ts` — **EventSource → fetch 스트리밍**(`createSseParser`). 409 본문을 읽어 `conflict.campaignId`를 띄우고, 끝난 스트림에 자동 재접속하는 위험이 사라졌다. `cancel()`은 취소 엔드포인트를 부르고 `campaign_result`까지 스트림을 유지(`cancelRequested`/`cancelError`). `approval_required` → 열에 "🙋 사람 승인 대기" 노트(금액·누적·사유·approvalId). `CANCELED` 라벨: 사람이 눌렀으면 "브랜드 취소로 중단", 아니면 "목표 도달로 취소"; `SKIP_REASON_LABEL`.
+- `frontend/src/app/brand/campaign/page.tsx` — "취소 요청됨 · 결과를 기다리는 중" + "취소 중" 필, 409 배너 + "실행 중인 캠페인 취소"(id 모르면 안내만). `NegotiationColumn` 승인 노트 → `/brand/approvals?focus=…`. `CampaignResultBanner` `PENDING_APPROVAL`·취소 사유 라벨, 승인 큐 링크.
+- `frontend/src/app/brand/approvals/page.tsx`(신규, AuthGate BRAND) — PENDING/APPROVED/REJECTED 탭, 카드(금액·캠페인 누적·규칙 사유·프로모션/합의서 링크·생성/결정 시각), 승인 → 에스크로 요약(LOCKED 서명·Explorer / SKIPPED·FAILED 사유), 거절(사유 입력), `lastAttempt`(락 실패로 PENDING 유지) 표시. `?focus=approvalId`면 그 카드 강조.
+- `frontend/src/product/flow.ts` `/brand/approvals` + 테스트, `frontend/src/components/Sidebar.tsx` "승인 대기".
+- 테스트 `frontend/tests/campaign-cancel-approvals.test.ts`(6개): approval_required 노트, 사유 라벨, 취소 흐름(요청/실패/CANCELED 결과/라벨), 409 파서+conflict, SSE 파서, 승인·취소 클라이언트 경로/메서드/body/Idempotency-Key/404.
+- ExecPlan `.agent/execplans/13-brand-approvals-cancel.md`.
+
+### 여는 법
+```bash
+# 백엔드 (메모리 시드, 로컬 A2A, 단건 자동 한도 500 → 600·700 합의가 승인 큐로)
+cd backend && KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1 KNOT_GOV_MAX_AUTO_AGREEMENT_USDC=500 .venv/bin/uvicorn apps.api.main:app --port 8180
+# 프론트 (.env.local에 KNOT_API_BASE_URL=http://127.0.0.1:8180 + Firebase 설정; 워크트리는 --webpack)
+cd frontend && KNOT_API_BASE_URL=http://127.0.0.1:8180 npx next dev --webpack -p 3100
+# 브랜드 로그인 → /brand/campaign?promotionId=promotion-001 (상한 700, 목표 2) → 열에 "🙋 사람 승인 대기" → 사이드바 "승인 대기" 또는 /brand/approvals
+```
+
+### 실측 (백엔드 :8180, 한도 500)
+- 승인: `stream?targetCreatorCount=2&ceilingUsdc=700&parallelism=1` → 두 크리에이터 모두 700 즉시 수락(첫 제안 기본값 = ceiling) → `approval_required` 2건(`GOV_SINGLE_AGREEMENT_OVER_AUTO_LIMIT`, 누적 700/1400) → `TARGET_REACHED` 2/2, 에스크로 이벤트 없음. `GET /approvals?status=PENDING` 2건.
+- `:approve` → `APPROVED`, `decidedAt`, `escrow {SKIPPED, WEB3_GATEWAY_REQUIRED}`(로컬 모드); 재호출 멱등(같은 요약). `:reject {"reason":"분기 예산 초과 — 다음 캠페인으로 이월"}` → `REJECTED`, `reason` 저장. `?status=APPROVED|REJECTED` 분리 확인.
+- 취소: `status` 수신 직후(+14ms) 두 번째 stream → 409 `CAMPAIGN_ALREADY_RUNNING` "Campaign campaign-3b11512d-… is already running for this Promotion."; `:cancel`(+68ms) → 200 `CANCELING`. 다중 라운드 조건(opening 100 / ceiling 150 / concession 5 / maxRounds 5 / target 5)에서 진행 중 2건 ROUND_LIMIT·WALKED_AWAY, 대기 3건 `negotiation_skipped CANCELED`, **`campaign_result CANCELED` 0/5, 확정 0**. 끝난 뒤 재취소 → 404 `RESOURCE_NOT_FOUND`.
+  - 즉시 수락 조건(700)에서는 로컬 모드가 ~20ms 안에 목표를 채워 `TARGET_REACHED` + 대기 후보 `CANCELED`로 끝난다 — 사람이 누를 틈이 없는 건 로컬 모드 속도 문제.
+- 프록시(3100): `/brand/approvals` 200, `GET /api/v1/approvals?status=APPROVED`·`POST …:cancel`(404) 패스스루 정상.
+- `npm run typecheck`·eslint 클린, `npm test` 34 passed.
+- 브라우저: 워크트리에 Firebase 설정이 없어 두 페이지 모두 AuthGate "로그인이 필요합니다"까지만(SSR·브라우저). 로그인 이후 화면(취소 요청됨, 409 배너, 승인 노트, 승인 큐 카드)은 리듀서·클라이언트 테스트로 대신 검증. 승인/거절/취소 상태 전이는 curl로 확인.
+
+### 메모
+- `maxRounds`는 백엔드 스키마상 ≤ 5(20을 주면 pydantic 500). 캠페인 폼 검증 범위와 일치.
+- 승인 문서의 거절 사유 키는 `reason`(지시서의 `rejectReason`이 아님). 프론트는 둘 다 읽는다.
+- 승인 페이지 목록 로딩은 `requestKey`로 파생(`react-hooks/set-state-in-effect` 회피). 훅의 옵션 ref 갱신도 effect 안에서(`react-hooks/refs`).
+
+### 남은 것 / 다음
+- [ ] 승인·취소 라우트 인증(브랜드 소유자) — 백엔드
+- [ ] 브랜드 대시보드/프로모션 상세에 "승인 대기 N건" 배지(현재 사이드바 링크만)
+- [ ] 로컬 모드 캠페인에 인위적 지연 옵션(데모에서 "관전 중단"을 눈으로 보려면) — 백엔드
+- [ ] 승인 뒤 `lastAttempt`가 있는 PENDING(락 실패) 재시도 UX 실측(web3 gateway 모드 필요)
+- [ ] Firebase 로그인 환경에서 두 페이지 눈으로 확인
+
+## 세션 7 통합 (2026-10-14, 브랜치 `yewon/agent-world-phase7`)
+
+7a~7c 세 갈래를 병렬로 만들어 통합했다. 충돌은 세션 기록뿐. 백엔드 두 갈래가 `routes.py`를 나눠 고쳤고 git이 자동으로 합쳤다.
+
+### 통합 후 보강
+- 캠페인 스트림이 EventSource → fetch 스트리밍으로 바뀐 김에 `authHeaders()`로 토큰을 보낸다. 이제 `KNOT_CAMPAIGN_AUTH_REQUIRED=1`을 켜도 대시보드 캠페인 페이지가 동작한다(7b의 선결 조건 해소).
+- 스트림 쿼리 파라미터를 `Query(ge/le)`로 검증(이전엔 maxRounds 20이 500).
+- 캠페인 기본 첫 제안: 프로모션 `initialOffer`가 없으면 상한의 70%(`DEFAULT_OPENING_PCT`). 상한으로 열면 모든 협상이 1라운드로 끝나 양보가 없었다.
+- 거절 사유 저장 키는 `reason`으로 고정(프론트는 `reason`/`rejectReason` 둘 다 읽음).
+
+### 결과
+- 백엔드 268 passed / 8 skipped, 프론트 typecheck·eslint·34 tests.
+
+### 남은 것
+- [ ] 로컬 A2A 모드는 캠페인이 수십 ms에 끝나 "관전 중단"을 눈으로 보기 어렵다. 데모용 지연 옵션 또는 http+Gemini 모드로 시연
+- [ ] 브랜드 대시보드에 승인 대기 건수 배지
+- [ ] 마일스톤 릴리즈(creatorAccepted → deposit) 자동화 연결
