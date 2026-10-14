@@ -319,3 +319,43 @@ PR #2 병합(main `0bf46ec`). 새 브랜치에서 레지스트리가 운영 신�
 ### 남은 것 / 다음
 - [ ] Firestore에서 heartbeat → 브랜드 탐색 반영 실측 (복합 인덱스 포함)
 - [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
+
+## 세션 6a (2026-10-14) — Firestore 공유 레지스트리
+
+세션 5의 메모("메모리 저장소에서는 heartbeat 가 자기 프로세스에만 남는다")를 닫았다. 로컬 멀티 에이전트 스택이 **하나의 Firestore 에뮬레이터**를 보게 해서 heartbeat → 브랜드 탐색 → 캠페인 이력이 프로세스를 넘어 흐르는 것을 실측했다.
+
+### 추가/변경
+- `scripts/local/firebase.json` — Firestore 에뮬레이터 `:8780`(8080 은 Docker) + `firestore.indexes.json` 참조.
+- `scripts/local/a2a_multi_agent_firestore.sh` (신규) — 에뮬레이터(이미 떠 있으면 재사용) → `FIRESTORE_EMULATOR_HOST`/`GOOGLE_CLOUD_PROJECT=demo-knot`/`KNOT_REPOSITORY_BACKEND=firestore` → 시드 1회 → 크리에이터 A(:8091)/B(:8092)/브랜드(:8083). 브랜드에 `KNOT_CREATOR_AGENT_ENDPOINTS` 를 **주지 않는다** — B 테넌트(003/005)의 baseUrl 은 B 의 heartbeat 가 레지스트리에 쓴다. 메모리 스크립트는 그대로.
+- `backend/scripts/seed_firestore.py` (신규) — `seed_demo_repository` 를 Firestore 에, 멱등, 컬렉션별 개수 출력, `FIRESTORE_EMULATOR_HOST` 없으면 거부(`--allow-remote` 필요), 재시드 시 레지스트리 운영 신호 보존.
+- `libs/repositories/firestore_adapter.py` — `where(filter=FieldFilter(...))` (SDK 2.x 의 positional 폐기 경고가 탐색 쿼리마다 7개 나던 것 제거). 그 외 어댑터는 에뮬레이터에서 메모리 저장소와 결과 동일(원문 CRUD, `==`/`array_contains`/`<=`, limit, 서브컬렉션, 중첩/None/빈 컨테이너, create-only, 멱등키).
+- `firestore.indexes.json` — 탐색 쿼리(`_public_filters`)와 정확히 맞는 복합 인덱스 추가(등식 5 + `categoryKeys` CONTAINS + `nextAvailableAt` 범위). `docs/08` §19.
+- 테스트 `tests/test_firestore_emulator_agents.py` — 에뮬레이터 있을 때 3개(어댑터 왕복, 탐색 쿼리 = 메모리, heartbeat → 다른 클라이언트의 탐색 → 캠페인 → `negotiationStats`/`agreements`+milestones/`matchRuns`), 항상 1개(인덱스 드리프트). ExecPlan `.agent/execplans/09-firestore-shared-registry.md`.
+
+### 실행
+```bash
+# 필요: java 11+, node/npx, venv 에 google-cloud-firestore
+scripts/local/a2a_multi_agent_firestore.sh                       # 에뮬레이터 + 시드 + A/B/브랜드
+cd backend && python scripts/a2a_campaign.py --category beauty --total 1300 --target 2   # 2번 실행
+# Firestore UI: http://127.0.0.1:4000/firestore   관전: http://127.0.0.1:8083/brand/v1/campaign
+
+# 테스트 (에뮬레이터 떠 있을 때; 없으면 3개 skip)
+cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 pytest tests/test_firestore_emulator_agents.py
+# 시드만
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 GOOGLE_CLOUD_PROJECT=demo-knot \
+  python backend/scripts/seed_firestore.py --creator-agent-base-url http://127.0.0.1:8091/a2a/v1
+```
+
+### 실측 (LLM off, 포트 8191/8192/8183 으로 실행)
+- 1회차 탐색: 후보 6명 전부 🟢(크리에이터 heartbeat 를 브랜드가 Firestore 에서 읽음). 005/003 의 baseUrl 이 `127.0.0.1:8192`(B) — 엔드포인트 env 없이 레지스트리만으로 라우팅. 결과 TARGET_REACHED 2/2, 확정 1000/1300 (agent-creator-1 400, creator-agent-005 400→600).
+- 2회차 탐색: agent-creator-1 / creator-agent-005 가 `🟢1/1` (브랜드가 1회차에 쓴 `negotiationStats` 를 다시 읽음), 나머지 `-/-`.
+- 에뮬레이터 `agentRegistry/creator-agent-005`: `baseUrl=http://127.0.0.1:8192/a2a/v1`(B), `healthStatus=UP`, `lastProbeStatus=UP`, `negotiationStats.agreements=2/attempts=2`(2회차 후). `agreements` 4건, `matchRuns` 2건.
+
+### 메모
+- 에뮬레이터는 복합 인덱스를 강제하지 않는다. 인덱스 정합성은 테스트로, 실 Firestore 는 `firebase deploy --only firestore:indexes --config scripts/local/firebase.json`.
+- `dev_stack.sh`(Auth 에뮬레이터)와 동시에 띄우면 UI/허브 포트(4000/4400)가 겹친다.
+
+### 남은 것 / 다음
+- [ ] 제품 API(`apps/api`)도 같은 Firestore 로 붙여 에스크로 락까지 한 스택에서
+- [ ] 실 Firestore(knot-dev) 인덱스 배포 + 폴백 경고가 사라지는지 확인
+- [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
