@@ -70,7 +70,11 @@ function TurnBubble({ turn }: { turn: CampaignTurn }) {
 
 function NoteBox({ note }: { note: ColumnNote }) {
   const tone =
-    note.kind === "escrow_failed" ? "text-negative" : note.kind === "escrow_skipped" ? "text-caution" : "text-foreground";
+    note.kind === "escrow_failed"
+      ? "text-negative"
+      : note.kind === "escrow_skipped" || note.kind === "approval_required"
+        ? "text-caution"
+        : "text-foreground";
   return (
     <div className="sketch-alt mt-2 border border-dashed border-border-subtle bg-background px-3 py-2 text-xs">
       <p className={`font-semibold ${tone}`}>{note.title}</p>
@@ -83,6 +87,14 @@ function NoteBox({ note }: { note: ColumnNote }) {
         {note.agreementId ? (
           <Link href={`/brand/agreements/${note.agreementId}`} className="underline underline-offset-2">
             합의서 보기
+          </Link>
+        ) : null}
+        {note.approvalId ? (
+          <Link
+            href={`/brand/approvals?focus=${encodeURIComponent(note.approvalId)}`}
+            className="underline underline-offset-2"
+          >
+            승인 큐에서 결정
           </Link>
         ) : null}
         {note.explorerUrl ? (

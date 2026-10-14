@@ -2,12 +2,24 @@
 
 import Link from "next/link";
 import type { CampaignResult } from "@/product/campaignTypes";
-import { CAMPAIGN_OUTCOME_LABEL, NEGOTIATION_OUTCOME_LABEL } from "../useCampaignStream";
+import { CAMPAIGN_OUTCOME_LABEL, NEGOTIATION_OUTCOME_LABEL, SKIP_REASON_LABEL } from "../useCampaignStream";
 import { Pill } from "./DiscoveryTable";
+
+const ESCROW_STATUS_LABEL: Record<string, string> = {
+  LOCKED: "예치 완료",
+  SKIPPED: "보류",
+  FAILED: "실패",
+  PENDING_APPROVAL: "🙋 사람 승인 대기",
+};
 
 export function CampaignResultBanner({ result, promotionId }: { result: CampaignResult; promotionId: string }) {
   const tone =
-    result.outcome === "TARGET_REACHED" ? "positive" : result.outcome === "PARTIAL" ? "caution" : "negative";
+    result.outcome === "TARGET_REACHED"
+      ? "positive"
+      : result.outcome === "PARTIAL" || (result.outcome === "CANCELED" && result.agreedCount > 0)
+        ? "caution"
+        : "negative";
+  const hasPendingApproval = result.negotiations.some((negotiation) => negotiation.escrow?.status === "PENDING_APPROVAL");
   return (
     <section className="sketch ink border border-border-subtle bg-surface-raised p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -41,9 +53,12 @@ export function CampaignResultBanner({ result, promotionId }: { result: Campaign
                   {outcome
                     ? NEGOTIATION_OUTCOME_LABEL[outcome] ?? outcome
                     : negotiation.status === "SKIPPED"
-                      ? `시작 안 함 · ${negotiation.skipReason ?? ""}`
+                      ? (SKIP_REASON_LABEL as Record<string, string>)[negotiation.skipReason ?? ""] ??
+                        `시작 안 함 · ${negotiation.skipReason ?? ""}`
                       : negotiation.status}
-                  {negotiation.escrow ? ` · 에스크로 ${negotiation.escrow.status}` : ""}
+                  {negotiation.escrow
+                    ? ` · 에스크로 ${ESCROW_STATUS_LABEL[negotiation.escrow.status] ?? negotiation.escrow.status}`
+                    : ""}
                 </span>
               </span>
               <span className="flex items-center gap-3 font-mono text-sm">
@@ -66,6 +81,11 @@ export function CampaignResultBanner({ result, promotionId }: { result: Campaign
         <Link href={`/brand/promotions/${promotionId}`} className="sketch-pill bg-accent px-4 py-2 text-background">
           프로모션 상세로
         </Link>
+        {hasPendingApproval ? (
+          <Link href="/brand/approvals" className="sketch-pill border border-border-subtle px-4 py-2">
+            🙋 승인 큐에서 결정
+          </Link>
+        ) : null}
         {result.agreementIds.length === 0 ? (
           <span className="self-center text-sm text-muted">체결된 합의서가 없습니다.</span>
         ) : null}

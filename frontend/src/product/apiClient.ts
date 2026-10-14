@@ -1,6 +1,14 @@
-import type { CampaignRequest, RunCampaignResponse } from "@/product/campaignTypes";
+import type {
+  ApprovalDoc,
+  ApprovalListResponse,
+  ApprovalResponse,
+  ApprovalStatus,
+  ApproveApprovalResponse,
+} from "@/product/approvalTypes";
+import type { CampaignRequest, CancelCampaignResponse, RunCampaignResponse } from "@/product/campaignTypes";
 
-export type { CampaignRequest, RunCampaignResponse } from "@/product/campaignTypes";
+export type { CampaignRequest, CancelCampaignResponse, RunCampaignResponse } from "@/product/campaignTypes";
+export type { ApprovalDoc, ApprovalStatus } from "@/product/approvalTypes";
 
 type ApiEnvelope<T> = {
   data: T;
@@ -967,6 +975,50 @@ export class ProductApiClient {
     return path;
   }
 
+  /**
+   * 실행 중인 캠페인 취소. 대기 후보는 `CANCELED`로 미시작, 진행 중 협상은 다음 전송 전에
+   * A2A cancel. 이미 만든 합의는 남는다. 실행 중이 아니면 404(`NOT_FOUND`).
+   */
+  async cancelCampaign(promotionId: string, campaignId: string) {
+    return this.request<CancelCampaignResponse>(
+      `/api/v1/promotions/${encodeURIComponent(promotionId)}/campaigns/${encodeURIComponent(campaignId)}:cancel`,
+      { method: "POST" },
+    );
+  }
+
+  /* ---------- 거버넌스 승인 큐 (docs/09 부록 5) ---------- */
+
+  async listApprovals(status?: ApprovalStatus) {
+    const search = status ? `?status=${encodeURIComponent(status)}` : "";
+    const response = await this.request<ApprovalListResponse>(`/api/v1/approvals${search}`);
+    return response.approvals;
+  }
+
+  async getApproval(approvalId: string) {
+    const response = await this.request<ApprovalResponse>(`/api/v1/approvals/${encodeURIComponent(approvalId)}`);
+    return response.approval;
+  }
+
+  /**
+   * 승인 → 같은 `lock_escrow` 경로로 예치. 멱등키를 생략하면 서버가 `approval-{id}`를 쓴다.
+   * 락 실패 시 409(승인은 PENDING 유지)로 던져진다.
+   */
+  async approveApproval(approvalId: string, idempotencyKey?: string) {
+    const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+    return this.request<ApproveApprovalResponse>(`/api/v1/approvals/${encodeURIComponent(approvalId)}:approve`, {
+      method: "POST",
+      headers,
+    });
+  }
+
+  async rejectApproval(approvalId: string, reason: string): Promise<ApprovalDoc> {
+    const response = await this.request<ApprovalResponse>(`/api/v1/approvals/${encodeURIComponent(approvalId)}:reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+    return response.approval;
+  }
+
   async getNegotiation(negotiationId: string) {
     const response = await this.request<{ negotiation: ApiNegotiation }>(
       `/api/v1/negotiations/${negotiationId}`,
@@ -1223,7 +1275,8 @@ export class ProductApiClient {
   }
 }
 
-function toApiError(status: number, body: unknown) {
+/** 실패 응답(status + JSON body)을 ProductApiError로. 스트림(fetch SSE) 경로도 같은 규칙을 쓴다. */
+export function toApiError(status: number, body: unknown) {
   if (isProblemEnvelope(body)) {
     const message =
       userFacingProblemMessage(body.detail.code) ??
@@ -1241,7 +1294,34 @@ function toApiError(status: number, body: unknown) {
   return new ProductApiError(`요청이 실패했습니다. 상태 코드: ${status}`, status, "API_ERROR", body);
 }
 
+/**
+ * 409 `CAMPAIGN_ALREADY_RUNNING`의 detail 문장("Campaign campaign-… is already running …")에서
+ * 캠페인 id를 뽑는다. 문구가 바뀌어도 죽지 않도록 못 찾으면 null.
+ */
+export function runningCampaignIdFromProblem(problem: unknown): string | null {
+  // 백엔드 id는 `campaign-{uuid4}`. 문제 문서의 `type` URL(…/campaign-already-running)에 속지 않도록
+  // uuid 꼴을 먼저 찾고, detail 문장에서만 느슨한 꼴을 허용한다.
+  const UUID_ID = /\bcampaign-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/i;
+  const LOOSE_ID = /\bcampaign-(?!already\b)[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*\b/;
+  const texts: string[] = [];
+  const visit = (value: unknown) => {
+    if (typeof value === "string") texts.push(value);
+    else if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(problem);
+  for (const text of texts) {
+    const match = UUID_ID.exec(text);
+    if (match) return match[0];
+  }
+  const detail = isProblemEnvelope(problem) ? problem.detail.detail : null;
+  const loose = typeof detail === "string" ? LOOSE_ID.exec(detail) : null;
+  return loose ? loose[0] : null;
+}
+
 function userFacingProblemMessage(code: string) {
+  if (code === "CAMPAIGN_ALREADY_RUNNING") {
+    return "이 프로모션에는 이미 실행 중인 캠페인이 있습니다. 먼저 취소하거나 끝날 때까지 기다려 주세요.";
+  }
   if (code === "ROLE_ALREADY_SELECTED") {
     return "KNOT v1에서는 한 계정에 하나의 역할만 사용할 수 있습니다. 브랜드 데모는 t1, 크리에이터 데모는 c1 계정으로 각각 입장해 주세요.";
   }

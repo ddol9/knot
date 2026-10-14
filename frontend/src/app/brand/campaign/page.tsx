@@ -55,7 +55,11 @@ function CampaignRunner({ promotionId }: { promotionId: string }) {
   const [promotionError, setPromotionError] = useState<string | null>(null);
   const [values, setValues] = useState<CampaignFormValues>(defaultCampaignFormValues);
   const [formError, setFormError] = useState<string | null>(null);
-  const { state, start, cancel, reset } = useCampaignStream();
+  const [conflictNotice, setConflictNotice] = useState<string | null>(null);
+  const [conflictBusy, setConflictBusy] = useState(false);
+  const { state, start, cancel, reset } = useCampaignStream({
+    cancelCampaign: (campaignId) => client.cancelCampaign(promotionId, campaignId),
+  });
 
   useEffect(() => {
     let active = true;
@@ -91,7 +95,26 @@ function CampaignRunner({ promotionId }: { promotionId: string }) {
     const problem = validateCampaignForm(values);
     setFormError(problem);
     if (problem) return;
+    setConflictNotice(null);
     start(client.campaignStreamUrl(promotionId, toCampaignRequest(values)));
+  }
+
+  /** 409로 알게 된 "다른 곳에서 실행 중인" 캠페인을 취소한다 (이 화면은 그 스트림을 보고 있지 않다). */
+  async function cancelConflicting(campaignId: string) {
+    setConflictBusy(true);
+    try {
+      const response = await client.cancelCampaign(promotionId, campaignId);
+      setConflictNotice(
+        `${response.campaignId} 취소를 요청했습니다(${response.status}). 서버가 정리를 마치면 다시 시작할 수 있습니다.`,
+      );
+    } catch (caught: unknown) {
+      const notFound = caught instanceof ProductApiError && caught.status === 404;
+      setConflictNotice(
+        notFound ? "그 캠페인은 이미 끝났습니다. 다시 시작해 보세요." : `취소 요청이 실패했습니다: ${readableError(caught)}`,
+      );
+    } finally {
+      setConflictBusy(false);
+    }
   }
 
   const columns = state.columnOrder.map((id) => state.columns[id]).filter(Boolean);
@@ -118,7 +141,7 @@ function CampaignRunner({ promotionId }: { promotionId: string }) {
           ) : null}
         </div>
         <div className="flex flex-col items-end gap-2 text-right">
-          <PhasePill phase={state.phase} />
+          <PhasePill phase={state.phase} cancelRequested={state.cancelRequested} />
           {state.campaignId ? (
             <span className="break-all font-mono text-[10px] text-muted">
               campaign {state.campaignId}
@@ -126,23 +149,50 @@ function CampaignRunner({ promotionId }: { promotionId: string }) {
             </span>
           ) : null}
           {busy ? (
-            <button
-              type="button"
-              onClick={cancel}
-              className="sketch-pill border border-border-subtle px-3 py-1 text-xs"
-            >
-              관전 중단
-            </button>
+            state.cancelRequested ? (
+              <span className="text-xs text-muted">취소 요청됨 · 결과를 기다리는 중</span>
+            ) : (
+              <button
+                type="button"
+                onClick={cancel}
+                className="sketch-pill border border-border-subtle px-3 py-1 text-xs"
+              >
+                관전 중단
+              </button>
+            )
           ) : state.phase !== "idle" ? (
             <button type="button" onClick={reset} className="sketch-pill border border-border-subtle px-3 py-1 text-xs">
               화면 초기화
             </button>
           ) : null}
+          {state.cancelError ? <span className="max-w-xs text-xs text-negative">{state.cancelError}</span> : null}
         </div>
       </section>
 
       {state.phase === "error" && state.error ? (
-        <div className="sketch-alt ink border border-negative bg-background p-4 text-sm text-negative">{state.error}</div>
+        <div className="sketch-alt ink border border-negative bg-background p-4 text-sm text-negative">
+          <p>{state.error}</p>
+          {state.conflict ? (
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-foreground">
+              {state.conflict.campaignId ? (
+                <>
+                  <span className="break-all font-mono text-[10px] text-muted">campaign {state.conflict.campaignId}</span>
+                  <button
+                    type="button"
+                    disabled={conflictBusy}
+                    onClick={() => void cancelConflicting(state.conflict?.campaignId ?? "")}
+                    className="sketch-pill border border-border-subtle px-3 py-1 text-xs disabled:opacity-50"
+                  >
+                    {conflictBusy ? "취소 요청 중…" : "실행 중인 캠페인 취소"}
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs text-muted">캠페인 ID를 알 수 없어 여기서 취소할 수 없습니다. 끝날 때까지 기다려 주세요.</span>
+              )}
+              {conflictNotice ? <span className="text-xs text-muted">{conflictNotice}</span> : null}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
@@ -177,10 +227,16 @@ function CampaignRunner({ promotionId }: { promotionId: string }) {
   );
 }
 
-function PhasePill({ phase }: { phase: ReturnType<typeof useCampaignStream>["state"]["phase"] }) {
+function PhasePill({
+  phase,
+  cancelRequested,
+}: {
+  phase: ReturnType<typeof useCampaignStream>["state"]["phase"];
+  cancelRequested: boolean;
+}) {
   if (phase === "idle") return <Pill tone="muted">대기</Pill>;
   if (phase === "connecting") return <Pill tone="caution">연결 중</Pill>;
-  if (phase === "running") return <Pill tone="accent">진행 중</Pill>;
+  if (phase === "running") return cancelRequested ? <Pill tone="caution">취소 중</Pill> : <Pill tone="accent">진행 중</Pill>;
   if (phase === "done") return <Pill tone="positive">종료</Pill>;
   return <Pill tone="negative">오류</Pill>;
 }

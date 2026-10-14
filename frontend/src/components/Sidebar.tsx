@@ -10,6 +10,7 @@ const BRAND_NAV: NavItem[][] = [
   [
     { label: "대시보드", href: "/brand" },
     { label: "프로모션", href: "/brand/promotions" },
+    { label: "승인 대기", href: "/brand/approvals" },
     { label: "정산", href: "/brand/settlement" },
   ],
   [

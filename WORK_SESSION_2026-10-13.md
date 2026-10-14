@@ -540,3 +540,46 @@ negotiation.run 1.3 ms ok @knot-api  creatorAgentId=agent-creator-1 outcome=AGRE
 - [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
 - [ ] 승인·캠페인 라우트 인증(다른 브랜치 진행 중)
 - [ ] 실제 LangSmith 키로 미러링 확인, Cloud Run `jsonPayload.traceId` 필터 실측
+## 세션 7a (2026-10-14) — 취소 연결 + 승인 큐 화면
+
+브랜드 대시보드에서 사람 개입 루프를 닫았다. "관전 중단"이 서버 캠페인을 실제로 멈추고, 거버넌스가 사람 뒤로 미룬 에스크로 락을 `/brand/approvals`에서 승인/거절한다. `frontend/`만 변경(백엔드 무수정).
+
+### 추가/변경
+- `frontend/src/product/apiClient.ts` — `cancelCampaign(promotionId, campaignId)`, `listApprovals(status?)`, `getApproval(id)`, `approveApproval(id, idempotencyKey?)`, `rejectApproval(id, reason)`, `runningCampaignIdFromProblem`(409 detail 문장에서 campaignId, uuid 우선·type URL 제외), `toApiError` export, `CAMPAIGN_ALREADY_RUNNING` 한국어 문구.
+- `frontend/src/product/campaignTypes.ts` — `ApprovalRequiredEvent`(합집합·이름 목록), `CancelCampaignResponse`. `frontend/src/product/approvalTypes.ts`(신규) — `ApprovalDoc`, 상태 라벨, 규칙 id → 한국어(`GOV_SINGLE_AGREEMENT_OVER_AUTO_LIMIT` "단건 합의 금액이 자동 승인 한도를 넘음", `GOV_CAMPAIGN_TOTAL_OVER_AUTO_LIMIT` "캠페인 누적 확정 금액이 자동 승인 한도를 넘음").
+- `frontend/src/app/brand/campaign/useCampaignStream.ts` — **EventSource → fetch 스트리밍**(`createSseParser`). 409 본문을 읽어 `conflict.campaignId`를 띄우고, 끝난 스트림에 자동 재접속하는 위험이 사라졌다. `cancel()`은 취소 엔드포인트를 부르고 `campaign_result`까지 스트림을 유지(`cancelRequested`/`cancelError`). `approval_required` → 열에 "🙋 사람 승인 대기" 노트(금액·누적·사유·approvalId). `CANCELED` 라벨: 사람이 눌렀으면 "브랜드 취소로 중단", 아니면 "목표 도달로 취소"; `SKIP_REASON_LABEL`.
+- `frontend/src/app/brand/campaign/page.tsx` — "취소 요청됨 · 결과를 기다리는 중" + "취소 중" 필, 409 배너 + "실행 중인 캠페인 취소"(id 모르면 안내만). `NegotiationColumn` 승인 노트 → `/brand/approvals?focus=…`. `CampaignResultBanner` `PENDING_APPROVAL`·취소 사유 라벨, 승인 큐 링크.
+- `frontend/src/app/brand/approvals/page.tsx`(신규, AuthGate BRAND) — PENDING/APPROVED/REJECTED 탭, 카드(금액·캠페인 누적·규칙 사유·프로모션/합의서 링크·생성/결정 시각), 승인 → 에스크로 요약(LOCKED 서명·Explorer / SKIPPED·FAILED 사유), 거절(사유 입력), `lastAttempt`(락 실패로 PENDING 유지) 표시. `?focus=approvalId`면 그 카드 강조.
+- `frontend/src/product/flow.ts` `/brand/approvals` + 테스트, `frontend/src/components/Sidebar.tsx` "승인 대기".
+- 테스트 `frontend/tests/campaign-cancel-approvals.test.ts`(6개): approval_required 노트, 사유 라벨, 취소 흐름(요청/실패/CANCELED 결과/라벨), 409 파서+conflict, SSE 파서, 승인·취소 클라이언트 경로/메서드/body/Idempotency-Key/404.
+- ExecPlan `.agent/execplans/13-brand-approvals-cancel.md`.
+
+### 여는 법
+```bash
+# 백엔드 (메모리 시드, 로컬 A2A, 단건 자동 한도 500 → 600·700 합의가 승인 큐로)
+cd backend && KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1 KNOT_GOV_MAX_AUTO_AGREEMENT_USDC=500 .venv/bin/uvicorn apps.api.main:app --port 8180
+# 프론트 (.env.local에 KNOT_API_BASE_URL=http://127.0.0.1:8180 + Firebase 설정; 워크트리는 --webpack)
+cd frontend && KNOT_API_BASE_URL=http://127.0.0.1:8180 npx next dev --webpack -p 3100
+# 브랜드 로그인 → /brand/campaign?promotionId=promotion-001 (상한 700, 목표 2) → 열에 "🙋 사람 승인 대기" → 사이드바 "승인 대기" 또는 /brand/approvals
+```
+
+### 실측 (백엔드 :8180, 한도 500)
+- 승인: `stream?targetCreatorCount=2&ceilingUsdc=700&parallelism=1` → 두 크리에이터 모두 700 즉시 수락(첫 제안 기본값 = ceiling) → `approval_required` 2건(`GOV_SINGLE_AGREEMENT_OVER_AUTO_LIMIT`, 누적 700/1400) → `TARGET_REACHED` 2/2, 에스크로 이벤트 없음. `GET /approvals?status=PENDING` 2건.
+- `:approve` → `APPROVED`, `decidedAt`, `escrow {SKIPPED, WEB3_GATEWAY_REQUIRED}`(로컬 모드); 재호출 멱등(같은 요약). `:reject {"reason":"분기 예산 초과 — 다음 캠페인으로 이월"}` → `REJECTED`, `reason` 저장. `?status=APPROVED|REJECTED` 분리 확인.
+- 취소: `status` 수신 직후(+14ms) 두 번째 stream → 409 `CAMPAIGN_ALREADY_RUNNING` "Campaign campaign-3b11512d-… is already running for this Promotion."; `:cancel`(+68ms) → 200 `CANCELING`. 다중 라운드 조건(opening 100 / ceiling 150 / concession 5 / maxRounds 5 / target 5)에서 진행 중 2건 ROUND_LIMIT·WALKED_AWAY, 대기 3건 `negotiation_skipped CANCELED`, **`campaign_result CANCELED` 0/5, 확정 0**. 끝난 뒤 재취소 → 404 `RESOURCE_NOT_FOUND`.
+  - 즉시 수락 조건(700)에서는 로컬 모드가 ~20ms 안에 목표를 채워 `TARGET_REACHED` + 대기 후보 `CANCELED`로 끝난다 — 사람이 누를 틈이 없는 건 로컬 모드 속도 문제.
+- 프록시(3100): `/brand/approvals` 200, `GET /api/v1/approvals?status=APPROVED`·`POST …:cancel`(404) 패스스루 정상.
+- `npm run typecheck`·eslint 클린, `npm test` 34 passed.
+- 브라우저: 워크트리에 Firebase 설정이 없어 두 페이지 모두 AuthGate "로그인이 필요합니다"까지만(SSR·브라우저). 로그인 이후 화면(취소 요청됨, 409 배너, 승인 노트, 승인 큐 카드)은 리듀서·클라이언트 테스트로 대신 검증. 승인/거절/취소 상태 전이는 curl로 확인.
+
+### 메모
+- `maxRounds`는 백엔드 스키마상 ≤ 5(20을 주면 pydantic 500). 캠페인 폼 검증 범위와 일치.
+- 승인 문서의 거절 사유 키는 `reason`(지시서의 `rejectReason`이 아님). 프론트는 둘 다 읽는다.
+- 승인 페이지 목록 로딩은 `requestKey`로 파생(`react-hooks/set-state-in-effect` 회피). 훅의 옵션 ref 갱신도 effect 안에서(`react-hooks/refs`).
+
+### 남은 것 / 다음
+- [ ] 승인·취소 라우트 인증(브랜드 소유자) — 백엔드
+- [ ] 브랜드 대시보드/프로모션 상세에 "승인 대기 N건" 배지(현재 사이드바 링크만)
+- [ ] 로컬 모드 캠페인에 인위적 지연 옵션(데모에서 "관전 중단"을 눈으로 보려면) — 백엔드
+- [ ] 승인 뒤 `lastAttempt`가 있는 PENDING(락 실패) 재시도 UX 실측(web3 gateway 모드 필요)
+- [ ] Firebase 로그인 환경에서 두 페이지 눈으로 확인
