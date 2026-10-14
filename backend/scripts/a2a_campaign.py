@@ -108,9 +108,14 @@ def main() -> int:
                             tag = f"{YEL}미선정{RESET}"
                         rank = c["rank"] if c["rank"] is not None else "-"
                         band = c.get("publicRateBand") or ""
+                        health = {"UP": "🟢", "DOWN": "🔴"}.get(c.get("healthStatus"), "⚪")
+                        tr = c.get("trackRecord") or {}
+                        hist = (
+                            f"{tr['agreements']}/{tr['attempts']}" if tr.get("attempts") else "-/-"
+                        )
                         print(
                             f"  {rank:>2}  {c['creatorAgentId']:<18} {band:<9} "
-                            f"{c['score']:.3f}  {c['baseUrl']:<32} {tag}"
+                            f"{c['score']:.3f} {health}{hist:<5} {c['baseUrl']:<32} {tag}"
                         )
                 elif event == "negotiation_started":
                     led = data["ledger"]

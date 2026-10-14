@@ -23,6 +23,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from libs.a2a.client import CreatorA2AClient, CreatorA2AClientError
+from libs.a2a.registry import record_agent_probe, record_negotiation_outcome
 from libs.agents.agreements import (
     AgreementTermsMismatch,
     build_agreement_document,
@@ -308,11 +309,18 @@ class CampaignRunner:
             except CreatorA2AClientError as exc:
                 ledger.release(agent_id)
                 negotiation.status, negotiation.skip_reason = "SKIPPED", f"A2A_ERROR: {exc}"
+                # Could not talk to it: the registry should order it later next time.
+                record_agent_probe(
+                    self._repository, agent_id, status="DOWN", error=str(exc)[:200], now=_now()
+                )
                 self._emit("negotiation_error", agent_id, {"detail": str(exc)})
                 return
 
             negotiation.result = result
             negotiation.status = "DONE"
+            record_negotiation_outcome(
+                self._repository, agent_id, outcome=result.outcome, now=_now()
+            )
             agreement: dict[str, Any] | None = None
             if result.outcome == "AGREED":
                 try:

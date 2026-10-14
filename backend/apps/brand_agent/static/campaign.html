@@ -115,7 +115,7 @@
 
     <div class="panel">
       <h2>탐색 결과 <span id="dmeta" class="mono"></span></h2>
-      <table><thead><tr><th>#</th><th>에이전트</th><th>카테고리</th><th>공개 금액대</th><th>점수</th><th>엔드포인트</th><th>상태</th></tr></thead>
+      <table><thead><tr><th>#</th><th>에이전트</th><th>카테고리</th><th>공개 금액대</th><th>점수</th><th>생존 · 이력</th><th>엔드포인트</th><th>상태</th></tr></thead>
       <tbody id="dtable"><tr><td colspan="7" class="empty">시작하면 여기에 후보와 탈락 사유가 표시됩니다.</td></tr></tbody></table>
       <div class="ledger">
         <div>총예산<b id="l-total">–</b></div>
@@ -151,9 +151,15 @@
       else if (c.cardStatus === 'DOWN') st = `<span class="pill bad">card DOWN</span> <span class="mono">${esc(c.cardError || '')}</span>`;
       else if (c.cardStatus === 'NO_SKILL') st = '<span class="pill bad">협상 스킬 없음</span>';
       else st = '<span class="pill warn">후보 수 초과로 미선정</span>';
+      const tr = c.trackRecord || {};
+      const hist = tr.attempts ? `${tr.agreements}/${tr.attempts} 합의 (${Math.round(tr.agreementRate * 100)}%)` : '이력 없음';
+      const health = c.healthStatus === 'UP' ? '🟢' : c.healthStatus === 'DOWN' ? '🔴' : '⚪';
+      const seen = c.lastSeenAt ? String(c.lastSeenAt).slice(11, 19) : '';
       return `<tr><td>${c.rank ?? '–'}</td><td><b>${esc(c.displayName)}</b><br><span class="mono">${esc(c.creatorAgentId)}</span></td>
         <td>${esc((c.categories || []).join(', '))}</td><td class="mono">${esc(c.publicRateBand || '')}</td>
-        <td class="mono">${c.score ? c.score.toFixed(3) : '–'}</td><td class="mono">${esc(c.baseUrl)}</td><td>${st}</td></tr>`;
+        <td class="mono">${c.score ? c.score.toFixed(3) : '–'}${c.rankScore && c.rankScore !== c.score ? `<br><small>순위 ${c.rankScore.toFixed(3)}</small>` : ''}</td>
+        <td class="mono">${health} ${esc(seen)}<br><small>${esc(hist)}</small></td>
+        <td class="mono">${esc(c.baseUrl)}</td><td>${st}</td></tr>`;
     }).join('');
   }
   function column(agentId, name) {
