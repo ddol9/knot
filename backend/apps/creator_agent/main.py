@@ -1,25 +1,59 @@
+import logging
+import threading
+from datetime import UTC, datetime
+
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from apps.api.repository_factory import build_repository
 from libs.a2a.agent_card import build_creator_agent_card
 from libs.a2a.models import A2A_VERSION, A2ASendRequest
+from libs.a2a.registry import record_agent_heartbeat
 from libs.a2a.store import A2ATaskError, InMemoryA2ATaskStore
 from libs.agents.creator_context import repository_context_resolver
 from libs.agents.demo_context import demo_creator_contexts
 from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import creator_rationale
 from libs.observability.middleware import add_request_context
+from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
     settings: Settings | None = None,
     task_store: InMemoryA2ATaskStore | None = None,
+    repository: KnotRepository | None = None,
 ) -> FastAPI:
     settings = settings or get_settings(service_name="knot-creator-agent")
     app = FastAPI(title="KNOT Creator Agent", version=settings.schema_version)
     add_request_context(app, service_name=settings.service_name)
-    app.state.task_store = task_store or _build_task_store(settings)
+    if repository is None and task_store is None:
+        repository = build_repository(settings)
+    app.state.repository = repository
+    app.state.task_store = task_store or _build_task_store(settings, repository)
+
+    @app.on_event("startup")
+    def announce_hosted_tenants() -> None:
+        # Tell the registry which tenants live at this base URL and that they are alive.
+        if repository is None:
+            return
+        _heartbeat(repository, settings)
+        if settings.creator_agent_heartbeat_seconds > 0:
+            stop = threading.Event()
+            app.state.heartbeat_stop = stop
+
+            def loop() -> None:
+                while not stop.wait(settings.creator_agent_heartbeat_seconds):
+                    _heartbeat(repository, settings)
+
+            threading.Thread(target=loop, name="creator-agent-heartbeat", daemon=True).start()
+
+    @app.on_event("shutdown")
+    def stop_heartbeat() -> None:
+        stop = getattr(app.state, "heartbeat_stop", None)
+        if stop is not None:
+            stop.set()
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -149,10 +183,37 @@ def _validate_service_auth(*, settings: Settings, authorization: str | None) -> 
         raise HTTPException(status_code=401, detail="Creator A2A service authentication failed")
 
 
-def _build_task_store(settings: Settings) -> InMemoryA2ATaskStore:
+def hosted_tenants(repository: KnotRepository, settings: Settings) -> list[str]:
+    if settings.creator_agent_tenants:
+        return list(settings.creator_agent_tenants)
+    return [c.creator_agent_id for c in repository.list_creator_profiles() if c.active]
+
+
+def _heartbeat(repository: KnotRepository, settings: Settings) -> None:
+    now = datetime.now(UTC).isoformat()
+    tenants = hosted_tenants(repository, settings)
+    for tenant in tenants:
+        try:
+            record_agent_heartbeat(
+                repository,
+                tenant,
+                base_url=settings.creator_agent_base_url,
+                hosted_by=settings.service_name,
+                now=now,
+            )
+        except Exception:  # heartbeat is best-effort; never block serving
+            logger.exception("registry heartbeat failed for %s", tenant)
+    logger.info(
+        "registry heartbeat: %d tenant(s) at %s", len(tenants), settings.creator_agent_base_url
+    )
+
+
+def _build_task_store(
+    settings: Settings, repository: KnotRepository | None = None
+) -> InMemoryA2ATaskStore:
     # Memory (seeded) or Firestore: every creator in the repository is a tenant here.
     # Demo contexts stay as a fallback for tenants the repository does not know.
-    repository = build_repository(settings)
+    repository = repository or build_repository(settings)
     return InMemoryA2ATaskStore(
         demo_creator_contexts(),
         context_resolver=repository_context_resolver(repository),

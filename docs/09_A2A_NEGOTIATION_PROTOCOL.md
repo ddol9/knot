@@ -390,3 +390,21 @@ A2A Task COMPLETED (artifact: agreementId, termsHash, terms)
 - `libs/agents/creator_context.py` — 저장소 기반 크리에이터 컨텍스트 해석기(크리에이터 에이전트 + API 로컬 모드 공용)
 - `libs/agents/brand_campaign.py` — `settlement_hook`, `CandidateNegotiation.agreementId/escrow`, `matchRuns.status`는 docs/07 어휘(`AGREED`/`EXHAUSTED`) + `campaignOutcome`
 - `libs/agents/campaign_stream.py` — 러너 이벤트 → SSE (두 앱 공용)
+
+## 부록 4: 레지스트리 생존 신호와 협상 이력 (2026-10-14 추가)
+
+`agentRegistry/{agentId}`에 정책이 아니라 **관측된 행동**만 쌓는다. 브랜드 탐색은 매칭 점수(`score`)는 그대로 두고, 이 신호로 순서만 조정한 `rankScore`로 정렬한다.
+
+| 필드 | 누가 쓰나 | 의미 |
+|---|---|---|
+| `healthStatus`, `lastSeenAt`, `baseUrl`, `hostedBy`, `lastHeartbeatAt` | 크리에이터 에이전트 프로세스 (기동 시, `KNOT_CREATOR_AGENT_HEARTBEAT_SECONDS`로 주기) | "이 테넌트는 여기서 살아 있다" |
+| `lastProbeAt`, `lastProbeStatus`(UP/NO_SKILL/DOWN), `lastProbeError` | 브랜드 탐색 4단계·캠페인 전송 실패 | 브랜드가 실제로 본 결과. NO_SKILL은 살아 있음(UP)으로 침 |
+| `negotiationStats` {attempts, agreements, rejections, escalations, walkedAway, roundLimit, canceled, lastOutcome, lastNegotiatedAt} | 캠페인 결과마다 | 브랜드 측 취소(CANCELED)는 attempts에 넣지 않는다 |
+
+```text
+rankScore = score × (0.85 if healthStatus == DOWN else 1.0) + 0.05 × (agreementRate − 0.5)
+agreementRate = (agreements + 1) / (attempts + 2)      # 라플라스 보정, 이력 없음 = 0.5(중립)
+```
+DOWN은 하드 제외가 아니다. 프로브가 진실이므로 순서만 뒤로 보내고, 다시 UP이면 즉시 기록이 뒤집힌다.
+
+코드: `libs/a2a/registry.py` (`record_agent_heartbeat`, `record_agent_probe`, `record_negotiation_outcome`, `track_record`), `libs/agents/brand_discovery.rank_score`, `apps/creator_agent/main.py` heartbeat.

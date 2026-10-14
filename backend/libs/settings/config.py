@@ -40,6 +40,8 @@ class Settings(BaseModel):
     creator_agent_tenants: list[str] | None = None
     # Brand side: tenant -> A2A base URL overrides (registry baseUrl wins when present).
     creator_agent_endpoints: dict[str, str] = {}
+    # Creator agent process: re-announce hosted tenants every N seconds (0 = startup only).
+    creator_agent_heartbeat_seconds: int = 0
     creator_a2a_timeout_seconds: int = 30
     a2a_service_token: str | None = None
     web3_gateway_base_url: str = "http://localhost:8082"
@@ -102,13 +104,12 @@ def get_settings(service_name: str | None = None) -> Settings:
         service_name=resolved_service_name,
         git_sha=os.getenv("GIT_SHA", "local"),
         build_time=os.getenv("BUILD_TIME", "local"),
-        creator_agent_base_url=os.getenv(
-            "CREATOR_AGENT_BASE_URL", "http://localhost:8081/a2a/v1"
-        ),
+        creator_agent_base_url=os.getenv("CREATOR_AGENT_BASE_URL", "http://localhost:8081/a2a/v1"),
         creator_a2a_mode=os.getenv("KNOT_CREATOR_A2A_MODE", "local"),
         brand_agent_base_url=os.getenv("BRAND_AGENT_BASE_URL", "http://localhost:8083/brand/v1"),
         creator_agent_tenants=_csv_list(os.getenv("KNOT_CREATOR_AGENT_TENANTS")),
         creator_agent_endpoints=_csv_map(os.getenv("KNOT_CREATOR_AGENT_ENDPOINTS")),
+        creator_agent_heartbeat_seconds=int(os.getenv("KNOT_CREATOR_AGENT_HEARTBEAT_SECONDS", "0")),
         creator_a2a_timeout_seconds=int(os.getenv("CREATOR_A2A_TIMEOUT_SECONDS", "30")),
         a2a_service_token=os.getenv("KNOT_A2A_SERVICE_TOKEN"),
         web3_gateway_base_url=os.getenv("WEB3_GATEWAY_BASE_URL", "http://localhost:8082"),
@@ -133,9 +134,7 @@ def get_settings(service_name: str | None = None) -> Settings:
             "INSTAGRAM_APIFY_ACTOR_ID",
             "apify~instagram-profile-scraper",
         ),
-        instagram_apify_timeout_seconds=float(
-            os.getenv("INSTAGRAM_APIFY_TIMEOUT_SECONDS", "75")
-        ),
+        instagram_apify_timeout_seconds=float(os.getenv("INSTAGRAM_APIFY_TIMEOUT_SECONDS", "75")),
         secure_fetch_enabled=_truthy_default_true(os.getenv("KNOT_SECURE_FETCH_ENABLED")),
         secure_fetch_timeout_seconds=float(os.getenv("KNOT_SECURE_FETCH_TIMEOUT_SECONDS", "8")),
         paysh_mode=os.getenv("PAYSH_MODE", "sandbox"),
@@ -158,9 +157,7 @@ def get_settings(service_name: str | None = None) -> Settings:
         paysh_creator_verification_bot_threshold=float(
             os.getenv("PAYSH_CREATOR_VERIFICATION_BOT_THRESHOLD", "0.25")
         ),
-        paysh_content_verification_enabled=_truthy(
-            os.getenv("PAYSH_CONTENT_VERIFICATION_ENABLED")
-        ),
+        paysh_content_verification_enabled=_truthy(os.getenv("PAYSH_CONTENT_VERIFICATION_ENABLED")),
         paysh_content_verification_max_price=float(
             os.getenv("PAYSH_CONTENT_VERIFICATION_MAX_PRICE", "0.50")
         ),

@@ -14,11 +14,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from libs.a2a.registry import registry_base_url
+from libs.a2a.registry import (
+    record_agent_probe,
+    registry_base_url,
+    registry_health,
+    track_record,
+)
 from libs.agents.discovery import (
     FirestoreCreatorDiscoveryRepository,
     detail_candidates,
@@ -30,6 +36,9 @@ from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
 
 NEGOTIATION_SKILL_ID = "promotion-negotiation"
+# Operational signals adjust the order, not the matching score itself.
+DOWN_RANK_MULTIPLIER = 0.85  # last known DOWN: probe later, but still probe
+TRACK_RECORD_WEIGHT = 0.05  # +-0.025 around a neutral (0.5) agreement rate
 
 # (base_url) -> agent card dict; raises on failure.
 CardProbe = Callable[[str], dict[str, Any]]
@@ -55,6 +64,11 @@ class CandidateAgent(BaseModel):
     )  # UP / DOWN / NO_SKILL / SKIPPED
     card_error: str | None = Field(default=None, alias="cardError")
     selected: bool = False
+    # From the registry (observed, never policy): liveness + how past negotiations ended.
+    health_status: str = Field(default="UNKNOWN", alias="healthStatus")
+    last_seen_at: str | None = Field(default=None, alias="lastSeenAt")
+    track_record: dict[str, Any] = Field(default_factory=dict, alias="trackRecord")
+    rank_score: float = Field(default=0.0, alias="rankScore")
 
 
 class DiscoveryReport(BaseModel):
@@ -80,6 +94,7 @@ def discover_creator_agents(
     endpoint_overrides: Mapping[str, str] | None = None,
     card_probe: CardProbe | None = None,
     probe_workers: int = 5,
+    record_probes: bool = True,
 ) -> tuple[DiscoveryReport, dict[str, CreatorProfile]]:
     """Return the funnel result plus the full profiles of everything that reached stage 3."""
     overrides = dict(endpoint_overrides or {})
@@ -102,6 +117,8 @@ def discover_creator_agents(
             entry, tenant=profile.creator_agent_id, overrides=overrides, default=default_base_url
         )
         profiles[profile.creator_agent_id] = profile
+        health = registry_health(entry)
+        record = track_record(entry)
         candidates.append(
             CandidateAgent(
                 creatorAgentId=profile.creator_agent_id,
@@ -115,6 +132,19 @@ def discover_creator_agents(
                 publicRateBand=_optional_str(coarse.projection.get("publicRateBand")),
                 categories=list(profile.categories),
                 completedDealCount=profile.completed_deal_count,
+                healthStatus=health["healthStatus"],
+                lastSeenAt=health["lastSeenAt"],
+                trackRecord={
+                    "attempts": record.attempts,
+                    "agreements": record.agreements,
+                    "agreementRate": record.agreement_rate,
+                    "lastOutcome": record.last_outcome,
+                },
+                rankScore=rank_score(
+                    precise.score if precise.eligible else 0.0,
+                    health_status=health["healthStatus"],
+                    agreement_rate=record.agreement_rate,
+                ),
             )
         )
 
@@ -143,7 +173,13 @@ def discover_creator_agents(
         )
 
     candidates.sort(
-        key=lambda c: (not c.eligible, -c.score, -c.completed_deal_count, c.creator_agent_id)
+        key=lambda c: (
+            not c.eligible,
+            -c.rank_score,
+            -c.score,
+            -c.completed_deal_count,
+            c.creator_agent_id,
+        )
     )
     rank = 1
     for candidate in candidates:
@@ -156,10 +192,16 @@ def discover_creator_agents(
     if card_probe is not None and head:
         with ThreadPoolExecutor(max_workers=max(1, min(probe_workers, len(head)))) as pool:
             results = list(pool.map(lambda c: _probe(card_probe, c.base_url), head))
+        now = datetime.now(UTC).isoformat()
         for candidate, (status, error) in zip(head, results, strict=True):
             candidate.card_status = status
             candidate.card_error = error
             candidate.selected = status == "UP"
+            if record_probes:
+                # Feed the observation back so the next discovery orders by it.
+                record_agent_probe(
+                    repository, candidate.creator_agent_id, status=status, error=error, now=now
+                )
     else:
         for candidate in head:
             candidate.selected = True
@@ -172,6 +214,12 @@ def discover_creator_agents(
         candidates=candidates,
     )
     return report, profiles
+
+
+def rank_score(score: float, *, health_status: str, agreement_rate: float) -> float:
+    """Matching score nudged by liveness and track record (neutral history = unchanged)."""
+    multiplier = DOWN_RANK_MULTIPLIER if health_status == "DOWN" else 1.0
+    return round(score * multiplier + TRACK_RECORD_WEIGHT * (agreement_rate - 0.5), 4)
 
 
 def _probe(card_probe: CardProbe, base_url: str) -> tuple[str, str | None]:

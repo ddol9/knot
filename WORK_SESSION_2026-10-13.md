@@ -300,3 +300,22 @@ cd /Users/yewonchoi/Desktop/git/knot
 - [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전(`/campaigns/stream`) 연결
 - [ ] 레지스트리 healthStatus/lastSeenAt + 협상 성공률 순위 반영
 - [ ] Firestore 복합 인덱스 실측
+
+## 세션 5 (2026-10-14, 브랜치 `yewon/agent-registry-health`) — 레지스트리 생존 신호 + 협상 이력
+
+PR #2 병합(main `0bf46ec`). 새 브랜치에서 레지스트리가 운영 신호를 들고, 탐색 순위가 그걸 쓰게 했다.
+
+### 추가/변경
+- `libs/a2a/registry.py` — `record_agent_heartbeat`/`record_agent_probe`/`record_negotiation_outcome`, `registry_health`, `track_record`(라플라스 합의율). 모르는 에이전트는 `publicationStatus: UNKNOWN` 스텁.
+- `apps/creator_agent/main.py` — `create_app(repository=)`, 기동 시 호스팅 테넌트 heartbeat(`lastSeenAt`, `baseUrl`, `hostedBy`), `KNOT_CREATOR_AGENT_HEARTBEAT_SECONDS`(0=기동 시 1회).
+- `libs/agents/brand_discovery.py` — 후보에 `healthStatus/lastSeenAt/trackRecord/rankScore`, `rankScore` 정렬(DOWN ×0.85, 합의율 ±0.025), 프로브 결과를 레지스트리에 기록(`record_probes=`).
+- `libs/agents/brand_campaign.py` — 협상 결과마다 이력 기록, A2A 전송 실패는 프로브 DOWN.
+- 관전 페이지 "생존 · 이력" 컬럼, CLI 🟢/🔴 + n/m.
+- 테스트 `tests/test_agent_registry_health.py` 9개. ExecPlan 08, docs/09 부록 4.
+
+### 메모
+- 메모리 저장소에서는 heartbeat가 크리에이터 프로세스 자기 메모리에만 남는다(브랜드는 못 본다). Firestore에서 의미가 생긴다. 브랜드 프로세스의 프로브·이력은 같은 프로세스 안에서 두 번째 캠페인부터 보인다.
+
+### 남은 것 / 다음
+- [ ] Firestore에서 heartbeat → 브랜드 탐색 반영 실측 (복합 인덱스 포함)
+- [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
