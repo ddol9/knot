@@ -26,6 +26,7 @@ test("product route surface exposes separated MVP role pages", () => {
     "/brand/promotions/[promotionId]",
     "/brand/negotiations/[negotiationId]",
     "/brand/agreements/[agreementId]",
+    "/brand/campaign",
     "/brand/products/new",
     "/brand/negotiate",
     "/brand/result",

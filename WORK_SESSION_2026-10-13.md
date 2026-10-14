@@ -382,3 +382,43 @@ PR #3 병합(main `726dbb9`). 자율 경로에 "한도 밖은 사람이 결정�
 - [ ] 승인 라우트 인증(브랜드 소유자) + 프론트 승인 큐 화면
 - [ ] 마일스톤 릴리즈 측도 같은 규칙 모듈로 통합(현재 `AutomationLevel` 임계값 별도)
 - [ ] 승인 대기 알림(notifications/)
+- [x] 프론트 브랜드 대시보드에서 캠페인 실행·관전 → 세션 6b
+
+## 세션 6b (2026-10-14) — 브랜드 대시보드 캠페인 페이지
+
+브랜드 사용자가 제품 대시보드에서 캠페인(탐색 → 다중 A2A 협상 → 합의서 → 에스크로)을 실행하고 SSE로 관전하는 페이지. `frontend/`만 변경(백엔드 무수정).
+
+### 추가/변경
+- `frontend/src/product/campaignTypes.ts` — 캠페인 요청/응답과 SSE 이벤트 payload 타입(`CampaignStreamEvent` 판별 합집합).
+- `frontend/src/product/apiClient.ts` — `runCampaign(promotionId, body)`(POST), `campaignStreamUrl(promotionId, params)`(EventSource용 절대 URL, 같은 base URL 규칙).
+- `frontend/src/app/api/v1/[...path]/route.ts` — `text/event-stream` 응답은 버퍼링 없이 패스스루 + 클라이언트가 끊으면 업스트림 abort. (기존에는 `arrayBuffer()`로 모아서 캠페인이 끝날 때까지 아무 이벤트도 안 왔다. 백엔드 CORS가 3000만 허용해 직접 EventSource는 불가.)
+- `frontend/src/app/brand/campaign/` — `page.tsx`(`?promotionId=`), `useCampaignStream.ts`(리듀서/훅, 한국어 라벨), `components/`(조건 폼, 탐색 표(순위·점수·생존·이력·상태), 예산 장부 타일, 크리에이터별 대화 열(말풍선·입력 중), 결과 배너(합의서 링크)).
+- `frontend/src/features/dashboard/PromotionDetail.tsx` — "여러 크리에이터와 동시 협상" 링크.
+- `frontend/src/product/flow.ts` 라우트 목록 + 테스트, `frontend/tests/campaign-stream.test.ts`(실제 로컬 캠페인 이벤트 리플레이 등 6개).
+- ExecPlan `.agent/execplans/10-brand-campaign-page.md`.
+
+### 여는 법
+```bash
+# 백엔드 (메모리 저장소 + 데모 시드, 로컬 A2A)
+cd backend && KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1 .venv/bin/uvicorn apps.api.main:app --port 8180
+# 프론트 (.env.local에 KNOT_API_BASE_URL=http://127.0.0.1:8180 + Firebase 설정)
+cd frontend && PORT=3100 npm run dev
+# 브랜드 계정으로 로그인 → 프로모션 상세 → "여러 크리에이터와 동시 협상"
+#   또는 http://localhost:3100/brand/campaign?promotionId=promotion-001
+```
+
+### 실측
+- 백엔드 직접 `curl -N …/promotions/promotion-001/campaigns/stream?targetCreatorCount=2`: 탐색 6명 → agent-creator-1·creator-agent-005 각 800 즉시 수락 → 합의서 2건, 에스크로 `SKIPPED/WEB3_GATEWAY_REQUIRED`(로컬 모드) → 003/004 `TARGET_REACHED` 미시작 → `TARGET_REACHED` 2/2, 확정 1600/2000.
+- 프록시 경유(3100)도 같은 순서, `content-type: text/event-stream`. 1초 간격 모의 SSE를 프록시로 통과시켜 이벤트가 지연 없이 도착함을 확인.
+- `npm run typecheck`·eslint 클린, `npm test` 28 passed.
+- 페이지 자체는 Firebase 로그인 설정이 없는 환경이라 AuthGate("로그인이 필요합니다")까지만 브라우저로 확인. 로그인 이후 화면은 리듀서 리플레이 테스트로 대신 검증.
+
+### 메모
+- `campaign_result`/`error`/연결 오류를 받으면 EventSource를 즉시 닫는다. 열어 두면 자동 재접속으로 같은 프로모션 캠페인이 다시 시작된다.
+- "관전 중단"은 프록시의 업스트림 fetch를 abort하지만 백엔드 캠페인 스레드는 끝까지 돈다.
+- Turbopack은 워크트리의 `node_modules` 심링크를 거부해서 로컬 확인은 `next dev --webpack`으로 했다.
+
+### 남은 것 / 다음
+- [ ] 캠페인 결과 영속 조회(새로고침 후에도 보이게) — matchRuns/agreements에서 재구성
+- [ ] 백엔드 CORS에 프론트 포트 추가 또는 프록시 없는 배포 경로 검토
+- [ ] Firebase 로그인 환경에서 페이지 전체 플로우 눈으로 확인

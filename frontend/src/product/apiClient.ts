@@ -1,3 +1,7 @@
+import type { CampaignRequest, RunCampaignResponse } from "@/product/campaignTypes";
+
+export type { CampaignRequest, RunCampaignResponse } from "@/product/campaignTypes";
+
 type ApiEnvelope<T> = {
   data: T;
   meta?: {
@@ -927,6 +931,42 @@ export class ProductApiClient {
     return response.events;
   }
 
+  /**
+   * 캠페인 동기 실행: 탐색 → 병렬 A2A 협상 → 합의서 → 에스크로 락.
+   * 스트림 없이 최종 결과만 필요할 때 쓴다. 금액을 생략하면 프로모션의
+   * initialOffer / budget.maxPerCreatorUsdc를 서버가 기본값으로 쓴다.
+   */
+  async runCampaign(promotionId: string, body: CampaignRequest = {}) {
+    return this.request<RunCampaignResponse>(
+      `/api/v1/promotions/${encodeURIComponent(promotionId)}/campaigns`,
+      {
+        method: "POST",
+        body: JSON.stringify(compactCampaignRequest(body)),
+      },
+    );
+  }
+
+  /**
+   * EventSource용 절대 URL. 브라우저에서는 ProductApiClient와 같은 base URL
+   * (basePath 포함 same-origin → `/api/v1/[...path]` 프록시)을 거치고, 서버에서는
+   * KNOT_API_BASE_URL을 그대로 쓴다. ceilingUsdc(비공개 상한)는 브랜드 자신의
+   * API로만 간다.
+   */
+  campaignStreamUrl(promotionId: string, params: CampaignRequest = {}) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(compactCampaignRequest(params))) {
+      query.set(key, String(value));
+    }
+    const search = query.toString();
+    const path = `${this.baseUrl}/api/v1/promotions/${encodeURIComponent(promotionId)}/campaigns/stream${
+      search ? `?${search}` : ""
+    }`;
+    if (typeof window !== "undefined") {
+      return new URL(path, window.location.origin).toString();
+    }
+    return path;
+  }
+
   async getNegotiation(negotiationId: string) {
     const response = await this.request<{ negotiation: ApiNegotiation }>(
       `/api/v1/negotiations/${negotiationId}`,
@@ -1236,6 +1276,17 @@ function validationMessage(errors: Array<{ loc?: unknown[]; msg?: string }>) {
   if (!first) return "입력값을 확인해주세요.";
   const field = Array.isArray(first.loc) ? first.loc.filter((part) => part !== "body").join(".") : "";
   return field ? `${field}: ${first.msg ?? "입력값을 확인해주세요."}` : first.msg ?? "입력값을 확인해주세요.";
+}
+
+/** undefined / NaN 필드를 제거해 서버 기본값이 적용되게 한다. */
+function compactCampaignRequest(input: CampaignRequest) {
+  const payload: Record<string, number> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      payload[key] = value;
+    }
+  }
+  return payload;
 }
 
 function withoutStatus(input: PromotionCreateInput) {
