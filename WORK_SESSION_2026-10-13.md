@@ -480,3 +480,44 @@ campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2
 - [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
 - [ ] 승인·캠페인 라우트 인증
 - [ ] 단일 협상 경로(`start_negotiation`)에도 `negotiation.run` span
+
+## 세션 7c (2026-10-14) — 단일 협상 경로 트레이싱
+
+프로덕트 API의 단일 협상 경로(`POST /promotions/{id}/matches:run` → `POST /match-runs/{id}:start-negotiation`)가 캠페인 경로와 **같은 모양의 스팬 트리**를 남기게 했다. 6d의 "남은 것" 마지막 항목. ExecPlan `.agent/execplans/15-single-negotiation-tracing.md`.
+
+### 추가/변경 (`backend/apps/api/routes.py`, 캠페인·승인 라우트는 손대지 않음)
+- `start_negotiation` → `negotiation.run` 스팬(캠페인과 같은 attrs + `negotiationId`, `matchRunId`), 메시지마다 `turn` 이벤트(round/role/type/amountUsdc/messageProvider/allowed). 브랜드 턴은 **보내기 전**, 크리에이터 턴은 **응답 파싱 직후**에 기록(`_trace_negotiation_turn`) — 전송이 실패해도 무엇을 제안했는지 남는다.
+- `_send_creator_a2a_task` → `a2a.send` 스팬(type/round/messageId → taskId/taskState/replyType). 기존 전송 본체는 `_send_creator_a2a_task_untraced`. 로컬 모드의 `creator.decide`(→ `llm.call`)가 그 아래에 붙고, HTTP 모드는 헤더로 크리에이터 프로세스 스팬이 붙는다.
+- `_discover_creator_agent_card` → `a2a.agent_card` 스팬(mode/baseUrl → discovered/name/version/skillCount). 로컬 모드도 `discovered=False`로 찍는다.
+- `run_matches` → `match.run` 스팬(promotionId/matchRunId → queried/ranked/eligible/selected/selectedCreatorAgentId/verificationMode/verificationStatus), pay.sh가 켜져 있으면 자식 `match.verify`(`_traced_paid_verification`: provider/mode → status/continuation/idempotencyReused/amountUsdc, 영수증·지갑 없음).
+- traceId 부착: `negotiations/{id}.traceId`, `matchRuns/{id}.traceId`(이 경로), 두 응답 `meta.traceId`(= `X-Trace-Id`). `brandPolicySnapshot`/`creatorPolicySnapshot`/크리에이터 정책은 스팬에 넘기지 않는다.
+- `scripts/trace_tail.py` 요약 키에 `match.run`, `match.verify`, `a2a.agent_card`.
+- 테스트: `tests/test_tracing_product_path.py` 3개(로컬 합의 트리·응답/문서 traceId 일치, 카운터 흐름 `turn` 6개 순서·금액·offset 단조, 전송 실패 시 `negotiation.run`/`a2a.send` error + OFFER 턴만) + `tests/test_api_a2a_http_integration.py`에 HTTP 경계 중첩 단언(`creator.decide` 3개가 `a2a.send` 3개 아래). 전체 257 passed / 8 skipped / 6 deselected.
+- `docs/agent_ops/02_langsmith_integration.md` 스팬 표에 3개 추가.
+
+### 실측 (워크트리 코드로 API :8181, `KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1`, `python scripts/trace_tail.py /tmp/knot-local/api-trace.log`)
+```text
+trace 8c953e68455740efa48038a16c0b52c5  2 spans  1 ms  [knot-api]
+match.run 1.0 ms ok @knot-api  promotionId=promotion-001 queried=6 ranked=6 selected=1 verificationStatus=SKIPPED
+  match.verify 0.1 ms ok @knot-api  provider=pay.sh mode=sandbox status=SKIPPED continuation=FREE_SIGNALS_ONLY amountUsdc=0.02
+
+trace e2af6368d4dd499a80bd0234b7f52751  5 spans  1 ms  [knot-api]
+negotiation.run 1.3 ms ok @knot-api  creatorAgentId=agent-creator-1 outcome=AGREED rounds=1 finalAmountUsdc=300 agreementId=agreement-978277f1-…
+  · turn +0.29 ms  round=1 role=brand type=OFFER amountUsdc=300 messageProvider=deterministic
+  · turn +0.61 ms  round=1 role=creator type=ACCEPT amountUsdc=300 messageProvider=deterministic allowed=True
+  a2a.agent_card 0.0 ms ok @knot-api  mode=local discovered=False
+  a2a.send 0.3 ms ok @knot-api  type=OFFER round=1 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+    creator.decide 0.2 ms ok @knot-api  tenant=agent-creator-1 messageType=OFFER decisionType=ACCEPT violationCodes=[] taskState=TASK_STATE_COMPLETED
+      llm.call 0.0 ms ok @knot-api  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+```
+응답 헤더 `X-Trace-Id` = `meta.traceId` = `matchRun.traceId` / `negotiation.traceId` 확인.
+
+### 메모
+- `start_negotiation` 본문 전체를 `with start_trace(...), span("negotiation.run", ...)` 아래로 한 단계 들여써서 diff가 크다. 의미 변경은 `turn`/traceId/`meta.traceId` 추가뿐. 같은 함수를 건드리는 브랜치와는 머지 충돌이 날 수 있다.
+- 처음엔 영속 메시지를 append할 때 `turn`을 찍었는데, 전송 실패 테스트에서 브랜드 OFFER 턴이 사라지는 걸 보고 전송 전/파싱 후로 옮겼다(`BrandNegotiator._trace_turn`과 같은 시점).
+- 기존 협상이 있어 그대로 돌려주는 조기 반환은 스팬을 열지 않는다(협상이 돌지 않음).
+
+### 남은 것 / 다음
+- [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
+- [ ] 승인·캠페인 라우트 인증(다른 브랜치 진행 중)
+- [ ] 실제 LangSmith 키로 미러링 확인, Cloud Run `jsonPayload.traceId` 필터 실측
