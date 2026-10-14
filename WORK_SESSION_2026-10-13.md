@@ -319,3 +319,27 @@ PR #2 병합(main `0bf46ec`). 새 브랜치에서 레지스트리가 운영 신�
 ### 남은 것 / 다음
 - [ ] Firestore에서 heartbeat → 브랜드 탐색 반영 실측 (복합 인덱스 포함)
 - [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
+
+## 세션 6c (2026-10-14) — 거버넌스 가드레일 + 승인 큐
+
+PR #3 병합(main `726dbb9`). 자율 경로에 "한도 밖은 사람이 결정한다"를 코드로 넣었다.
+
+### 추가/변경
+- `libs/policies/governance.py` — `GovernanceRules`(settings), `evaluate_settlement`(단건 한도·캠페인 누적 한도·autoEscrow off), `flag_track_record`(연속 실패·저합의율). 결정적, LLM 없음, `governance-v1`.
+- `Settings.gov_*` — `KNOT_GOV_MAX_AUTO_AGREEMENT_USDC`(800), `KNOT_GOV_MAX_AUTO_CAMPAIGN_TOTAL_USDC`(2000), `KNOT_GOV_MAX_CONSECUTIVE_FAILURES`(3).
+- `libs/agents/brand_campaign.py` — `CampaignRunner(governance=)`. 정산 단계에서 승인 필요면 `approvals/{id}` PENDING 생성, `negotiation.escrow = PENDING_APPROVAL`, `approval_required` 이벤트, 정산 훅 미호출. 합의·예산 확정은 그대로.
+- `apps/api/routes.py` — `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}:approve`(멱등키 없으면 `approval-{id}`, 같은 `lock_escrow` 경로), `POST /approvals/{id}:reject`. 타임라인 `APPROVAL_REQUIRED`/`APPROVAL_GRANTED`/`APPROVAL_REJECTED`. `AGREEMENT_CREATED`는 정산 훅이 아니라 러너 이벤트에서 기록(승인 대기 합의도 남도록). `_lock_agreement_escrow` 헬퍼로 캠페인/승인 경로 공유.
+- `libs/agents/brand_discovery.py` — `trackRecord.flag`, `rank_score(flagged=)` ×0.7. `libs/a2a/registry.py` — `negotiationStats.recentOutcomes`(최근 10, CANCELED 제외).
+- `libs/repositories/firestore_paths.py` — `approvals`. `apps/api/schemas.py` — `ApprovalRejectRequest`.
+- 독립 브랜드 에이전트도 settings에서 거버넌스 주입. CLI·관전 페이지 "🙋 사람 승인 대기".
+- 테스트 `tests/test_governance.py`(10), `tests/test_api_approvals.py`(7). 전체 240 passed / 5 skipped. ExecPlan 11, docs/09 부록 5.
+
+### 메모
+- 시드 데모(promotion-001, open 400 / ceiling 700)는 기본 한도(800/2000)에서 둘 다 자동 락. 한도를 500으로 내리면 creator-agent-005의 600이 승인 큐로 간다 — 데모 때 `KNOT_GOV_MAX_AUTO_AGREEMENT_USDC=500`으로 보여줄 수 있다.
+- 캠페인 팬아웃은 병렬이라 어느 에이전트가 먼저 합의하는지 비결정적. 새 테스트는 `parallelism=1`. 기존 `test_campaign_skips_escrow_when_auto_escrow_is_off`가 전체 스위트 부하에서 드물게 agreedCount 2로 흔들림(목표 1인데 두 스레드가 동시에 합의) — 거버넌스와 무관, `brand_negotiator`의 should_stop 타이밍.
+- 승인 라우트는 캠페인 라우트처럼 인증 없음(데모). 운영 전 브랜드 소유자 인증 필요.
+
+### 남은 것 / 다음
+- [ ] 승인 라우트 인증(브랜드 소유자) + 프론트 승인 큐 화면
+- [ ] 마일스톤 릴리즈 측도 같은 규칙 모듈로 통합(현재 `AutomationLevel` 임계값 별도)
+- [ ] 승인 대기 알림(notifications/)

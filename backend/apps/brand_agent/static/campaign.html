@@ -228,6 +228,10 @@
       const d = JSON.parse(ev.data); const col = column(d.creatorAgentId);
       note(col, `📄 합의서 ${d.agreementId}<br><span class="mono">termsHash ${String(d.termsHash).slice(0, 20)}…</span><br>${d.amountUsdc} USDC · ${d.deliverableSummary}`);
     });
+    es.addEventListener('approval_required', (ev) => {
+      const d = JSON.parse(ev.data);
+      note(column(d.creatorAgentId), `🙋 사람 승인 대기 (approvalId <span class="mono">${d.approvalId}</span>)<br>${d.amountUsdc} USDC · ${(d.reasons || []).join(', ')}`);
+    });
     es.addEventListener('escrow_locked', (ev) => {
       const d = JSON.parse(ev.data);
       note(column(d.creatorAgentId), `🔒 에스크로 잠금 ${d.escrowId || ''}<br><span class="mono">${d.signature || ''}</span>`);

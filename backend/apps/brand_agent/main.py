@@ -43,6 +43,7 @@ from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import brand_message_display
 from libs.domain.models import AgreementTerms, CreatorPolicy, Promotion, UsageRights
 from libs.observability.middleware import add_request_context
+from libs.policies.governance import GovernanceRules
 from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
 
@@ -376,6 +377,9 @@ def _campaign_runner(
         display_provider=_display_provider(settings, promotion),
         on_event=on_event,
         settlement_hook=_standalone_settlement,
+        # Same guardrails as the product API: over-limit agreements wait for a person
+        # (approvals/{id}) instead of being handed to settlement.
+        governance=GovernanceRules.from_settings(settings),
     )
 
 
