@@ -480,3 +480,23 @@ campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2
 - [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
 - [ ] 승인·캠페인 라우트 인증
 - [ ] 단일 협상 경로(`start_negotiation`)에도 `negotiation.run` span
+
+## 세션 7b (2026-10-14) — 캠페인·승인 라우트 인증
+
+세션 6c/6 통합의 "승인·캠페인 라우트 인증"을 넣었다. 기준은 같은 `/promotions`·`/agreements` 에이전트 런타임 네임스페이스의 `POST /agreements/{id}/escrow:lock`(캠페인 정산이 그대로 부르는 함수): **헤더가 있으면 반드시 맞아야 하고, 없으면 익명 에이전트 런타임 경로**. `/brand/*`처럼 항상 토큰을 요구하는 건 스위치로 올린다.
+
+### 추가/변경
+- `apps/api/routes.py` — `_optional_brand_user`(토큰 → `_require_completed_role(BRAND)`, 없으면 `None` 또는 401), `_optional_promotion_owner`(+ `_require_brand_promotion_document`: 404/403, `brandId` 기준), `_approvals_for_brand`. 캠페인 라우트 3개(`run_campaign`, `stream_campaign`, `cancel_campaign`)와 승인 라우트 4개에 `Authorization` 헤더. 승인은 `_owned_approval`로 소유권 검사를 상태 검사보다 먼저. `_decide_approval(decided_by=)` → `approvals/{id}.decidedBy`, 타임라인 `APPROVAL_GRANTED|REJECTED.data.decidedBy`, 감사 `actorUid`.
+- `libs/settings/config.py` — `campaign_auth_required` / `KNOT_CAMPAIGN_AUTH_REQUIRED`(기본 off). 켜면 헤더 없는 호출이 7개 라우트 모두 401 `UNAUTHENTICATED`.
+- 상태 코드: 토큰 무효 401 · 브랜드 아님/다른 브랜드 403 `FORBIDDEN` · 온보딩 미완 409 · 프로모션 없음 404. 시드 `promotion-001`(brand-001)은 `user-brand-1`(brand-1) 토큰으로 403 — `ownerUid`가 아니라 `brandId`가 소유권.
+- 테스트 `tests/test_api_auth_campaigns.py`(11). 기존 `test_api_campaigns.py`·`test_api_approvals.py` 무변경 통과. 전체 265 passed / 8 skipped. ExecPlan 14, docs/09 부록 5 "인증", docs/10 §3, `.env.example`.
+
+### 메모
+- 기본값을 "항상 필요"로 두지 않은 이유: 프론트 캠페인 관전이 네이티브 `EventSource`라 `Authorization`을 못 싣는다(프록시는 전달한다). Cloud Run(`KNOT_AUTH_MODE=firebase`)에서 켜면 관전이 즉시 401. 프론트가 스트림에 토큰을 싣게 바꾼 뒤 `KNOT_CAMPAIGN_AUTH_REQUIRED=1`로 올린다.
+- `KNOT_AUTH_MODE`에는 익명 모드가 없다(`firebase`/`emulator` 모두 `/brand/*`는 토큰 필수). 그래서 스위치를 인증 모드에 얹지 않고 별도 불리언으로.
+- 익명 결정의 `decidedBy`는 `null`(가짜 식별자 없음). 독립 브랜드 에이전트(`apps/brand_agent`)와 `matches:run`/`start-negotiation`은 손대지 않음.
+
+### 남은 것 / 다음
+- [ ] 프론트: 캠페인 스트림에 토큰 싣기(fetch 기반 SSE) → `KNOT_CAMPAIGN_AUTH_REQUIRED=1`
+- [ ] 단일 협상 경로(`matches:run`, `start-negotiation`)도 같은 헬퍼로
+- [ ] 승인 큐 화면에서 `decidedBy` 표시

@@ -2248,8 +2248,11 @@ def build_api_router(
 
     @router.post("/promotions/{promotion_id}/campaigns", status_code=status.HTTP_201_CREATED)
     def run_campaign(
-        promotion_id: str, request: PromotionCampaignRequest | None = None
+        promotion_id: str,
+        request: PromotionCampaignRequest | None = None,
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         # One trace per campaign request: the middleware's request trace id when present.
         trace_id = current_trace_id() or new_trace_id()
         with start_trace(trace_id):
@@ -2299,7 +2302,11 @@ def build_api_router(
         ceilingUsdc: int | None = None,
         concessionPct: int = 50,
         maxRounds: int | None = None,
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> StreamingResponse:
+        # Same bearer as the POST (the Next proxy forwards Authorization); checked before
+        # the stream opens so a 401/403 is a plain response, not an SSE error event.
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         request = PromotionCampaignRequest(
             targetCreatorCount=targetCreatorCount,
             maxCandidates=maxCandidates,
@@ -2355,9 +2362,14 @@ def build_api_router(
         )
 
     @router.post("/promotions/{promotion_id}/campaigns/{campaign_id}:cancel")
-    def cancel_campaign(promotion_id: str, campaign_id: str) -> dict[str, object]:
+    def cancel_campaign(
+        promotion_id: str,
+        campaign_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
         """Stop a running campaign: queued candidates are skipped, in-flight ones canceled
         before their next A2A send. Agreements already made stay."""
+        _optional_promotion_owner(repository, settings, token_verifier, authorization, promotion_id)
         with running_campaigns_lock:
             runner = running_campaigns.get(promotion_id)
         if runner is None or runner.campaign_id != campaign_id:
@@ -2376,24 +2388,51 @@ def build_api_router(
     @router.get("/approvals")
     def list_approvals(
         status_filter: str | None = Query(default=None, alias="status"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
-        approvals = repository.list_raw_documents(COLLECTIONS.approvals)
+        user = _optional_brand_user(repository, settings, token_verifier, authorization)
+        approvals = _approvals_for_brand(
+            repository, repository.list_raw_documents(COLLECTIONS.approvals), user
+        )
         if status_filter:
             approvals = [a for a in approvals if a.get("status") == status_filter.upper()]
         approvals.sort(key=lambda item: str(item.get("createdAt", "")))
         return _ok({"approvals": approvals})
 
     @router.get("/approvals/{approval_id}")
-    def get_approval(approval_id: str) -> dict[str, object]:
-        return _ok({"approval": _get_approval(repository, approval_id)})
+    def get_approval(
+        approval_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
+        approval, _ = _owned_approval(approval_id, authorization)
+        return _ok({"approval": approval})
+
+    def _owned_approval(
+        approval_id: str, authorization: str | None
+    ) -> tuple[dict[str, object], str | None]:
+        """The approval and who is acting (Brand uid, or None on the anonymous dev path).
+
+        The owner check runs before any state check, so another Brand learns nothing
+        past the 403.
+        """
+        approval = _get_approval(repository, approval_id)
+        user = _optional_promotion_owner(
+            repository,
+            settings,
+            token_verifier,
+            authorization,
+            _require_document_str(approval, "promotionId"),
+        )
+        return approval, (_require_document_str(user, "uid") if user is not None else None)
 
     @router.post("/approvals/{approval_id}:approve")
     def approve_approval(
         approval_id: str,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, object]:
         """A person approves: run the settlement the campaign would have run."""
-        approval = _get_approval(repository, approval_id)
+        approval, decided_by = _owned_approval(approval_id, authorization)
         if approval.get("status") == "APPROVED":
             return _ok({"approval": approval})  # idempotent: same decision, same escrow
         if approval.get("status") != "PENDING":
@@ -2418,7 +2457,9 @@ def build_api_router(
                 str(escrow.get("reason") or "ESCROW_LOCK_FAILED"),
                 str(escrow.get("detail") or "Escrow lock failed; approval stays PENDING."),
             )
-        decided = _decide_approval(approval, decision="APPROVED", escrow=escrow)
+        decided = _decide_approval(
+            approval, decision="APPROVED", escrow=escrow, decided_by=decided_by
+        )
         _append_promotion_event(
             repository,
             promotion_id=promotion.promotion_id,
@@ -2429,18 +2470,23 @@ def build_api_router(
                 "amountUsdc": approval.get("amountUsdc"),
                 "escrowStatus": escrow.get("status"),
                 "escrowId": escrow.get("escrowId"),
+                "decidedBy": decided_by,
             },
         )
         _append_audit(
             repository,
             action="APPROVAL_GRANTED",
-            data={"approvalId": approval_id, "agreementId": agreement_id},
+            data={"approvalId": approval_id, "agreementId": agreement_id, "actorUid": decided_by},
         )
         return _ok({"approval": decided, "escrow": escrow})
 
     @router.post("/approvals/{approval_id}:reject")
-    def reject_approval(approval_id: str, request: ApprovalRejectRequest) -> dict[str, object]:
-        approval = _get_approval(repository, approval_id)
+    def reject_approval(
+        approval_id: str,
+        request: ApprovalRejectRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, object]:
+        approval, decided_by = _owned_approval(approval_id, authorization)
         if approval.get("status") == "REJECTED":
             return _ok({"approval": approval})
         if approval.get("status") != "PENDING":
@@ -2450,7 +2496,9 @@ def build_api_router(
                 f"Approval {approval_id} is {approval.get('status')}, not PENDING.",
             )
         agreement_id = _require_document_str(approval, "agreementId")
-        decided = _decide_approval(approval, decision="REJECTED", reason=request.reason)
+        decided = _decide_approval(
+            approval, decision="REJECTED", reason=request.reason, decided_by=decided_by
+        )
         _append_promotion_event(
             repository,
             promotion_id=_require_document_str(approval, "promotionId"),
@@ -2460,12 +2508,13 @@ def build_api_router(
                 "agreementId": agreement_id,
                 "amountUsdc": approval.get("amountUsdc"),
                 "reason": request.reason,
+                "decidedBy": decided_by,
             },
         )
         _append_audit(
             repository,
             action="APPROVAL_REJECTED",
-            data={"approvalId": approval_id, "agreementId": agreement_id},
+            data={"approvalId": approval_id, "agreementId": agreement_id, "actorUid": decided_by},
         )
         return _ok({"approval": decided})
 
@@ -2475,6 +2524,7 @@ def build_api_router(
         decision: str,
         escrow: dict[str, object] | None = None,
         reason: str | None = None,
+        decided_by: str | None = None,
     ) -> dict[str, object]:
         """Persist the decision on the approval, the agreement and the campaign candidate."""
         now = _now()
@@ -2483,6 +2533,7 @@ def build_api_router(
             **approval,
             "status": decision,
             "decidedAt": now,
+            "decidedBy": decided_by,  # Brand uid, or None on the anonymous dev path
             "updatedAt": now,
         }
         if escrow is not None:
@@ -5363,6 +5414,61 @@ def _require_dev_admin(
             "Dev admin access requires admin claim or allowlist.",
         )
     return auth_user
+
+
+def _optional_brand_user(
+    repository: KnotRepository,
+    settings: Settings,
+    token_verifier: FirebaseTokenVerifier,
+    authorization: str | None,
+) -> dict[str, object] | None:
+    """Brand-side agent-runtime routes (campaigns, approval queue).
+
+    Same rule as `/agreements/{id}/escrow:lock` and milestone release: a bearer token,
+    when sent, must verify (401) and belong to an onboarded Brand (403/409 like `/brand/*`).
+    Without one the call is the anonymous agent-runtime path (local demo, seeded
+    `promotion-001` has no owner) unless `KNOT_CAMPAIGN_AUTH_REQUIRED` turns it off (401).
+    """
+    if not authorization:
+        if settings.campaign_auth_required:
+            raise _problem(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHENTICATED",
+                "Authorization bearer token is required for campaign and approval routes.",
+            )
+        return None
+    auth_user = _require_auth_user(token_verifier, authorization)
+    return _require_completed_role(repository, auth_user, "BRAND")
+
+
+def _optional_promotion_owner(
+    repository: KnotRepository,
+    settings: Settings,
+    token_verifier: FirebaseTokenVerifier,
+    authorization: str | None,
+    promotion_id: str,
+) -> dict[str, object] | None:
+    """`_optional_brand_user` plus: the Brand must own the promotion (404/403 as `/brand/*`)."""
+    user = _optional_brand_user(repository, settings, token_verifier, authorization)
+    if user is not None:
+        _require_brand_promotion_document(repository, user, promotion_id)
+    return user
+
+
+def _approvals_for_brand(
+    repository: KnotRepository,
+    approvals: list[dict[str, object]],
+    user: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    """Anonymous (dev) sees the whole queue; a Brand sees only its own promotions'."""
+    if user is None:
+        return approvals
+    brand_id = _require_document_str(user, "brandId")
+    return [
+        approval
+        for approval in approvals
+        if _promotion_belongs_to_brand(repository, approval.get("promotionId"), brand_id)
+    ]
 
 
 def _require_user_document(repository: KnotRepository, uid: str) -> dict[str, object]:

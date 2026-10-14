@@ -102,6 +102,10 @@ class Settings(BaseModel):
     gov_max_auto_agreement_usdc: int = 800  # single agreement auto-fundable without a human
     gov_max_auto_campaign_total_usdc: int = 2000  # cumulative committed in one campaign
     gov_max_consecutive_failures: int = 3  # anomaly flag: last N negotiations all failed
+    # Campaign + approval routes: a bearer token, when sent, must be the Brand that owns
+    # the promotion. Without one they are the anonymous agent-runtime path (local demo,
+    # same as /agreements/{id}/escrow:lock) unless this turns that path off (-> 401).
+    campaign_auth_required: bool = False
     dev_admin_enabled: bool = False
     dev_admin_allowlist: list[str] = []
     # Agent tracing (libs/observability/tracing.py): JSON lines on logger `knot.trace`,
@@ -195,6 +199,7 @@ def get_settings(service_name: str | None = None) -> Settings:
             os.getenv("KNOT_GOV_MAX_AUTO_CAMPAIGN_TOTAL_USDC", "2000")
         ),
         gov_max_consecutive_failures=int(os.getenv("KNOT_GOV_MAX_CONSECUTIVE_FAILURES", "3")),
+        campaign_auth_required=_truthy(os.getenv("KNOT_CAMPAIGN_AUTH_REQUIRED")),
         dev_admin_enabled=_truthy(os.getenv("KNOT_DEV_ADMIN_ENABLED")),
         dev_admin_allowlist=_csv(os.getenv("KNOT_DEV_ADMIN_ALLOWLIST")),
         tracing_enabled=tracing_enabled_from_env(),
