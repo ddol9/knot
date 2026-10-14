@@ -491,3 +491,30 @@ Rules:
 - backfill with idempotent script;
 - switch writes after verification;
 - remove legacy only after route/API/test references are proven absent.
+
+## 19. Discovery query composite index and the local emulator (2026-10-14 추가)
+
+브랜드 탐색 1단계(`libs/agents/discovery.py::_public_filters`)는 `creatorDiscoveryProfiles` 에 다음 한 쿼리만 보낸다.
+
+```text
+agentStatus == PUBLISHED, acceptingOffers == true, availability == AVAILABLE,
+capacityAvailable == true, countryCode == KR,
+categoryKeys array_contains <primary required category>,
+nextAvailableAt <= <postingWindow.start ISO date>        (limit ≤ 100)
+```
+
+포맷(`formatKeys`)은 Firestore 가 쿼리당 `array_contains` 를 하나만 허용하므로 메모리에서 후처리한다.
+이 모양에 정확히 맞는 복합 인덱스가 `firestore.indexes.json` 첫 항목이다 (등식 5개 ASC → `categoryKeys` CONTAINS → 범위 필드 `nextAvailableAt` ASC 가 마지막).
+`backend/tests/test_firestore_emulator_agents.py::test_discovery_query_has_a_matching_composite_index` 가 쿼리와 인덱스 파일의 드리프트를 잡는다.
+인덱스가 없는 실 Firestore 에서는 `FAILED_PRECONDITION` → `_filter_without_composite_index` 폴백(경고 로그, 결과 동일, 비용만 큼). 배포: `firebase deploy --only firestore:indexes --config scripts/local/firebase.json`.
+
+로컬 실측은 Firestore 에뮬레이터(`scripts/local/firebase.json`, :8780)로 한다. **에뮬레이터는 복합 인덱스를 강제하지 않는다** — 쿼리 결과의 정확성(메모리 저장소와 동일)만 검증하고, 인덱스 존재는 위 테스트가 본다.
+
+```bash
+scripts/local/a2a_multi_agent_firestore.sh          # 에뮬레이터 + 시드 + 크리에이터 A/B + 브랜드 (하나의 Firestore)
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 GOOGLE_CLOUD_PROJECT=demo-knot \
+  python backend/scripts/seed_firestore.py --creator-agent-base-url http://127.0.0.1:8091/a2a/v1   # 멱등 시드
+cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 pytest tests/test_firestore_emulator_agents.py   # 어댑터·레지스트리 통합
+```
+
+`agentRegistry/{agentId}` 는 쿼리하지 않고 문서 id 로만 읽으므로 인덱스가 필요 없다. 시드 재실행은 레지스트리의 운영 필드(`healthStatus`, `lastSeenAt`, `hostedBy`, `negotiationStats`, 프로브 필드)를 보존한다.

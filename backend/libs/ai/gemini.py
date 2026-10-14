@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from libs.a2a.models import NegotiationMessageType, NegotiationPayload
 from libs.agents.negotiation import CreatorNegotiationContext, CreatorNegotiationDecision
 from libs.domain.models import AgreementTerms, CreatorProfile, Promotion
+from libs.observability.tracing import span
 from libs.settings.config import Settings
 
 
@@ -60,7 +61,7 @@ def candidate_explanation(
         "candidate": candidate,
         "outputSchema": {"explanation": "string"},
     }
-    generated = _generate_json(settings=settings, prompt=prompt)
+    generated = _generate_json(settings=settings, prompt=prompt, purpose="candidate_explanation")
     if generated.data is None:
         return _fallback(settings, fallback, reason=generated.fallback_reason)
     explanation = generated.data.get("explanation")
@@ -126,7 +127,7 @@ def creator_rationale(
             "rationale": "string",
         },
     }
-    generated = _generate_json(settings=settings, prompt=prompt)
+    generated = _generate_json(settings=settings, prompt=prompt, purpose="creator_rationale")
     if generated.data is None:
         return None
     rationale = generated.data.get("rationale")
@@ -197,7 +198,7 @@ def brand_message_display(
         "deterministicRationale": fallback_rationale,
         "outputSchema": {"message": "string"},
     }
-    generated = _generate_json(settings=settings, prompt=prompt)
+    generated = _generate_json(settings=settings, prompt=prompt, purpose="brand_message_display")
     if generated.data is None:
         return _fallback(settings, fallback_message, reason=generated.fallback_reason)
     message = generated.data.get("message")
@@ -211,7 +212,12 @@ def brand_message_display(
 
 
 def structured_analysis_json(*, settings: Settings, prompt: dict[str, object]) -> GenerationResult:
-    return _generate_json(settings=settings, prompt=prompt)
+    purpose = prompt.get("task")
+    return _generate_json(
+        settings=settings,
+        prompt=prompt,
+        purpose=purpose[:80] if isinstance(purpose, str) else "structured_analysis",
+    )
 
 
 def _fallback(
@@ -231,7 +237,26 @@ def _one_line(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()[:220]
 
 
-def _generate_json(*, settings: Settings, prompt: dict[str, object]) -> GenerationResult:
+def _generate_json(
+    *, settings: Settings, prompt: dict[str, object], purpose: str = "generate_json"
+) -> GenerationResult:
+    """One `llm.call` span per generation: provider/model/fallback/latency, never the prompt."""
+    with span(
+        "llm.call",
+        purpose=purpose,
+        provider="vertex-gemini" if settings.gemini_mode == "vertex" else "deterministic",
+        model=settings.gemini_model if settings.gemini_mode != "off" else None,
+        mode=settings.gemini_mode,
+    ) as call_span:
+        result = _call_vertex(settings=settings, prompt=prompt)
+        call_span.set(
+            fallbackReason=result.fallback_reason,
+            provider="vertex-gemini" if result.data is not None else "deterministic",
+        )
+        return result
+
+
+def _call_vertex(*, settings: Settings, prompt: dict[str, object]) -> GenerationResult:
     if settings.gemini_mode != "vertex":
         return GenerationResult(fallbackReason="gemini_mode_off")
     if not settings.firestore_project_id:

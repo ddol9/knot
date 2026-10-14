@@ -38,11 +38,26 @@ async function proxy(request: NextRequest, context: RouteContext) {
       body,
       cache: "no-store",
       headers: forwardedHeaders(request),
+      // 브라우저가 EventSource를 닫으면 업스트림 캠페인 스트림도 같이 끊는다.
+      signal: request.signal,
     });
+    const contentType = response.headers.get("Content-Type") ?? "application/json";
+    if (contentType.startsWith("text/event-stream") && response.body) {
+      // SSE(캠페인 관전)는 버퍼링하지 않고 그대로 흘려보낸다 — arrayBuffer()로
+      // 모으면 캠페인이 끝날 때까지 브라우저에 아무 이벤트도 도착하지 않는다.
+      return new Response(response.body, {
+        status: response.status,
+        headers: {
+          "Content-Type": contentType,
+          "Cache-Control": "no-cache, no-transform",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
     return new Response(await response.arrayBuffer(), {
       status: response.status,
       headers: {
-        "Content-Type": response.headers.get("Content-Type") ?? "application/json",
+        "Content-Type": contentType,
       },
     });
   } catch (caught) {

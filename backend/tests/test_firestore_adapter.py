@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 import pytest
 
@@ -45,11 +46,13 @@ class FakeCollectionReference:
 
     def where(
         self,
-        field_path: str,
-        op_string: str,
-        value: object,
+        field_path: str | None = None,
+        op_string: str | None = None,
+        value: object = None,
+        *,
+        filter: object = None,
     ) -> "FakeQuery":
-        return FakeQuery(self, [(field_path, op_string, value)], None)
+        return FakeQuery(self, [_filter_tuple(field_path, op_string, value, filter)], None)
 
     def limit(self, count: int) -> "FakeQuery":
         return FakeQuery(self, [], count)
@@ -68,13 +71,15 @@ class FakeQuery:
 
     def where(
         self,
-        field_path: str,
-        op_string: str,
-        value: object,
+        field_path: str | None = None,
+        op_string: str | None = None,
+        value: object = None,
+        *,
+        filter: object = None,
     ) -> "FakeQuery":
         return FakeQuery(
             self._collection,
-            [*self._filters, (field_path, op_string, value)],
+            [*self._filters, _filter_tuple(field_path, op_string, value, filter)],
             self._limit_count,
         )
 
@@ -164,13 +169,22 @@ def test_firestore_adapter_queries_with_filters_and_limit() -> None:
     ]
 
 
+def _filter_tuple(
+    field_path: str | None, op_string: str | None, value: object, field_filter: Any
+) -> tuple[str, str, object]:
+    # Mirrors the real SDK: either positional (deprecated) or `filter=FieldFilter(...)`.
+    if field_filter is not None:
+        assert field_path is None and op_string is None, "mixed positional and filter="
+        return (str(field_filter.field_path), str(field_filter.op_string), field_filter.value)
+    assert field_path is not None and op_string is not None
+    return (field_path, op_string, value)
+
+
 def _matches(document: Mapping[str, object], filters: list[tuple[str, str, object]]) -> bool:
     for field_path, op_string, expected in filters:
         value = document.get(field_path)
         if op_string == "==" and value != expected:
             return False
-        if op_string == "array_contains" and (
-            not isinstance(value, list) or expected not in value
-        ):
+        if op_string == "array_contains" and (not isinstance(value, list) or expected not in value):
             return False
     return True

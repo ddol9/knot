@@ -13,6 +13,7 @@ export const appRoutes = [
   "/brand/promotions/[promotionId]",
   "/brand/negotiations/[negotiationId]",
   "/brand/agreements/[agreementId]",
+  "/brand/campaign",
   "/brand/products/new",
   "/brand/negotiate",
   "/brand/result",

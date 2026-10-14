@@ -43,6 +43,8 @@ from libs.agents.negotiation import CreatorNegotiationContext
 from libs.ai.gemini import brand_message_display
 from libs.domain.models import AgreementTerms, CreatorPolicy, Promotion, UsageRights
 from libs.observability.middleware import add_request_context
+from libs.observability.tracing import current_trace_id, install_logging, propagate_to_thread
+from libs.policies.governance import GovernanceRules
 from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
 
@@ -126,6 +128,7 @@ def create_app(
     settings: Settings | None = None, repository: KnotRepository | None = None
 ) -> FastAPI:
     settings = settings or get_settings(service_name="knot-brand-agent")
+    install_logging(settings)
     repository = repository or build_repository(settings)
     app = FastAPI(title="KNOT Brand Agent", version=settings.schema_version)
     app.state.repository = repository
@@ -331,6 +334,7 @@ def _stream_negotiation(settings: Settings, request: NegotiationRequest) -> Iter
             "creatorAgentCard": card,
             "strategy": request.strategy.model_dump(by_alias=True),
             "llmMode": settings.gemini_mode,
+            "traceId": current_trace_id(),
         },
     )
 
@@ -343,7 +347,8 @@ def _stream_negotiation(settings: Settings, request: NegotiationRequest) -> Iter
         finally:
             events.put(("done", None))
 
-    threading.Thread(target=worker, daemon=True).start()
+    # The worker inherits the request trace so negotiation.run carries the same traceId.
+    threading.Thread(target=propagate_to_thread(worker), daemon=True).start()
     while True:
         event, data = events.get()
         if event == "done":
@@ -376,6 +381,9 @@ def _campaign_runner(
         display_provider=_display_provider(settings, promotion),
         on_event=on_event,
         settlement_hook=_standalone_settlement,
+        # Same guardrails as the product API: over-limit agreements wait for a person
+        # (approvals/{id}) instead of being handed to settlement.
+        governance=GovernanceRules.from_settings(settings),
     )
 
 

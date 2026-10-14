@@ -472,6 +472,14 @@ class DisputeResolutionRequest(DomainModel):
         return value
 
 
+class ApprovalRejectRequest(DomainModel):
+    """A person declines a governance-queued action (e.g. an escrow lock over the limit)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class PromotionCampaignRequest(DomainModel):
     """Brand-side campaign: discover creator agents and negotiate with several at once.
 

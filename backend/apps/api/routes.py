@@ -4,23 +4,26 @@ import logging
 import os
 import re
 import socket
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from html import unescape as html_unescape
+from itertools import chain
 from subprocess import TimeoutExpired
 from typing import cast
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from apps.api.schemas import (
     AnalysisConfirmRequest,
+    ApprovalRejectRequest,
     BrandOnboardingRequest,
     BrandPromotionCreateRequest,
     BrandSourceAnalysisRequest,
@@ -69,6 +72,7 @@ from libs.agents.agreements import write_agreement_milestones as _write_agreemen
 from libs.agents.brand import build_initial_terms
 from libs.agents.brand_campaign import (
     CampaignEvent,
+    CampaignResult,
     CampaignRunner,
     CampaignStrategy,
     http_transport_factory,
@@ -121,6 +125,7 @@ from libs.domain.models import (
     RateCard,
     UsageRights,
 )
+from libs.observability.tracing import current_trace_id, new_trace_id, start_trace
 from libs.payments.paysh import PayCliNotFound, PayShError, verify_content
 from libs.payments.paysh import fetch as fetch_paysh
 from libs.payments.settlement import (
@@ -139,6 +144,7 @@ from libs.policies.evidence import (
     classify_evidence_outcome,
     validate_evidence_observations,
 )
+from libs.policies.governance import GovernanceRules
 from libs.repositories.firestore_paths import COLLECTIONS, FirestorePaths
 from libs.repositories.serialization import model_to_document
 from libs.repositories.store import DocumentQueryFilter, IdempotencyConflictError, KnotRepository
@@ -2136,6 +2142,26 @@ def build_api_router(
                 model=model if isinstance(model, str) else None,
             )
 
+        def campaign_event(event: CampaignEvent) -> None:
+            # Agreement + governance milestones land on the promotion timeline for a person.
+            if event.event in ("agreement_created", "approval_required"):
+                _append_promotion_event(
+                    repository,
+                    promotion_id=promotion_id,
+                    event_type=(
+                        "AGREEMENT_CREATED"
+                        if event.event == "agreement_created"
+                        else "APPROVAL_REQUIRED"
+                    ),
+                    data={
+                        "campaignId": runner.campaign_id,
+                        "creatorAgentId": event.creator_agent_id,
+                        **event.data,
+                    },
+                )
+            if on_event is not None:
+                on_event(event)
+
         runner = CampaignRunner(
             repository=repository,
             promotion=promotion,
@@ -2144,13 +2170,14 @@ def build_api_router(
             default_base_url=settings.creator_agent_base_url,
             endpoint_overrides=settings.creator_agent_endpoints,
             display_provider=display_provider,
-            on_event=on_event,
+            on_event=campaign_event,
             probe_cards=settings.creator_a2a_mode == "http",
             brand=brand,
             promotion_document=promotion_document,
             settlement_hook=lambda agreement: _campaign_settlement(
                 promotion, agreement, campaign_id=runner.campaign_id
             ),
+            governance=GovernanceRules.from_settings(settings),
         )
         return runner
 
@@ -2159,28 +2186,20 @@ def build_api_router(
     ) -> dict[str, object]:
         """Fund the agreement through the existing escrow lock path, or say why not."""
         agreement_id = str(agreement["agreementId"])
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion.promotion_id,
-            event_type="AGREEMENT_CREATED",
-            data={
-                "agreementId": agreement_id,
-                "negotiationId": agreement.get("negotiationId"),
-                "campaignId": campaign_id,
-                "creatorAgentId": agreement.get("creatorAgentId"),
-                "amountUsdc": agreement.get("currentAmountUsdc"),
-            },
+        return _lock_agreement_escrow(
+            promotion, agreement_id, idempotency_key=f"campaign-{campaign_id}-{agreement_id}"
         )
+
+    def _lock_agreement_escrow(
+        promotion: Promotion, agreement_id: str, *, idempotency_key: str
+    ) -> dict[str, object]:
+        """Escrow summary for the campaign/approval paths; never raises into the caller."""
         if not promotion.autonomy.auto_escrow:
             return {"status": "SKIPPED", "reason": "AUTO_ESCROW_DISABLED"}
         if settings.web3_mode != "gateway":
             return {"status": "SKIPPED", "reason": "WEB3_GATEWAY_REQUIRED"}
         try:
-            locked = lock_escrow(
-                agreement_id,
-                authorization=None,
-                idempotency_key=f"campaign-{campaign_id}-{agreement_id}",
-            )
+            locked = lock_escrow(agreement_id, authorization=None, idempotency_key=idempotency_key)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             return {
@@ -2200,18 +2219,49 @@ def build_api_router(
             "explorerUrl": receipt.get("explorerUrl"),
         }
 
+    # One running campaign per promotion; lets a client cancel and stops a reconnecting
+    # EventSource from starting a second fan-out against the same creators.
+    running_campaigns: dict[str, CampaignRunner] = {}
+    running_campaigns_lock = threading.Lock()
+
+    def _register_campaign(promotion_id: str, runner: CampaignRunner) -> None:
+        with running_campaigns_lock:
+            current = running_campaigns.get(promotion_id)
+            if current is not None and not current.stopped:
+                raise _problem(
+                    status.HTTP_409_CONFLICT,
+                    "CAMPAIGN_ALREADY_RUNNING",
+                    f"Campaign {current.campaign_id} is already running for this Promotion.",
+                )
+            running_campaigns[promotion_id] = runner
+
+    def _unregister_campaign(promotion_id: str, runner: CampaignRunner) -> None:
+        with running_campaigns_lock:
+            if running_campaigns.get(promotion_id) is runner:
+                del running_campaigns[promotion_id]
+
+    def _run_registered(promotion_id: str, runner: CampaignRunner) -> CampaignResult:
+        try:
+            return runner.run()
+        finally:
+            _unregister_campaign(promotion_id, runner)
+
     @router.post("/promotions/{promotion_id}/campaigns", status_code=status.HTTP_201_CREATED)
     def run_campaign(
         promotion_id: str, request: PromotionCampaignRequest | None = None
     ) -> dict[str, object]:
-        runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
-        _append_promotion_event(
-            repository,
-            promotion_id=promotion_id,
-            event_type="CAMPAIGN_STARTED",
-            data={"campaignId": runner.campaign_id},
-        )
-        result = runner.run()
+        # One trace per campaign request: the middleware's request trace id when present.
+        trace_id = current_trace_id() or new_trace_id()
+        with start_trace(trace_id):
+            runner = _campaign_runner(promotion_id, request or PromotionCampaignRequest(), None)
+            _register_campaign(promotion_id, runner)
+            _append_promotion_event(
+                repository,
+                promotion_id=promotion_id,
+                event_type="CAMPAIGN_STARTED",
+                data={"campaignId": runner.campaign_id, "traceId": runner.trace_id},
+            )
+            result = _run_registered(promotion_id, runner)
         agreements = [
             document
             for agreement_id in result.agreement_ids
@@ -2227,14 +2277,17 @@ def build_api_router(
                 "outcome": result.outcome,
                 "agreedCount": result.agreed_count,
                 "committedUsdc": result.committed_usdc,
+                "traceId": result.trace_id,
             },
         )
-        return _ok(
+        response = _ok(
             {
                 "campaign": result.model_dump(by_alias=True, mode="json"),
                 "agreements": agreements,
             }
         )
+        cast(dict[str, object], response["meta"])["traceId"] = result.trace_id
+        return response
 
     @router.get("/promotions/{promotion_id}/campaigns/stream")
     def stream_campaign(
@@ -2257,13 +2310,42 @@ def build_api_router(
             maxRounds=maxRounds,
         )
         _get_promotion(repository, promotion_id)  # 404 before the stream opens
+        with running_campaigns_lock:
+            current = running_campaigns.get(promotion_id)
+        if current is not None and not current.stopped:
+            raise _problem(
+                status.HTTP_409_CONFLICT,
+                "CAMPAIGN_ALREADY_RUNNING",
+                f"Campaign {current.campaign_id} is already running for this Promotion.",
+            )
+        # Captured here: the body generator may run outside the request's context.
+        trace_id = current_trace_id() or new_trace_id()
+
+        def build_runner(on_event: Callable[[CampaignEvent], None]) -> CampaignRunner:
+            runner = _campaign_runner(promotion_id, request, on_event)
+            _register_campaign(promotion_id, runner)
+            run = runner.run
+
+            def run_and_unregister() -> CampaignResult:
+                try:
+                    return run()
+                finally:
+                    _unregister_campaign(promotion_id, runner)
+
+            runner.run = run_and_unregister  # type: ignore[method-assign]
+            return runner
 
         def events() -> Iterator[str]:
-            stream = campaign_event_stream(
-                lambda on_event: _campaign_runner(promotion_id, request, on_event),
-                status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
-            )
-            for event, data in stream:
+            # Starlette steps a sync generator in a fresh context copy per `next()`, so the
+            # trace is bound only around the first step, where the runner (and its worker
+            # thread's context) is created; later steps only forward events.
+            with start_trace(trace_id):
+                stream = campaign_event_stream(
+                    build_runner,
+                    status={"promotionId": promotion_id, "a2aMode": settings.creator_a2a_mode},
+                )
+                first = next(stream)
+            for event, data in chain([first], stream):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
@@ -2271,6 +2353,167 @@ def build_api_router(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @router.post("/promotions/{promotion_id}/campaigns/{campaign_id}:cancel")
+    def cancel_campaign(promotion_id: str, campaign_id: str) -> dict[str, object]:
+        """Stop a running campaign: queued candidates are skipped, in-flight ones canceled
+        before their next A2A send. Agreements already made stay."""
+        with running_campaigns_lock:
+            runner = running_campaigns.get(promotion_id)
+        if runner is None or runner.campaign_id != campaign_id:
+            raise _not_found("campaign", campaign_id)
+        runner.request_stop()
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion_id,
+            event_type="CAMPAIGN_CANCEL_REQUESTED",
+            data={"campaignId": campaign_id},
+        )
+        return _ok({"campaignId": campaign_id, "status": "CANCELING"})
+
+    # --- approval queue: governance parked an escrow lock for a person --------------------
+
+    @router.get("/approvals")
+    def list_approvals(
+        status_filter: str | None = Query(default=None, alias="status"),
+    ) -> dict[str, object]:
+        approvals = repository.list_raw_documents(COLLECTIONS.approvals)
+        if status_filter:
+            approvals = [a for a in approvals if a.get("status") == status_filter.upper()]
+        approvals.sort(key=lambda item: str(item.get("createdAt", "")))
+        return _ok({"approvals": approvals})
+
+    @router.get("/approvals/{approval_id}")
+    def get_approval(approval_id: str) -> dict[str, object]:
+        return _ok({"approval": _get_approval(repository, approval_id)})
+
+    @router.post("/approvals/{approval_id}:approve")
+    def approve_approval(
+        approval_id: str,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        """A person approves: run the settlement the campaign would have run."""
+        approval = _get_approval(repository, approval_id)
+        if approval.get("status") == "APPROVED":
+            return _ok({"approval": approval})  # idempotent: same decision, same escrow
+        if approval.get("status") != "PENDING":
+            raise _problem(
+                status.HTTP_409_CONFLICT,
+                "INVALID_STATE_TRANSITION",
+                f"Approval {approval_id} is {approval.get('status')}, not PENDING.",
+            )
+        agreement_id = _require_document_str(approval, "agreementId")
+        promotion = _get_promotion(repository, _require_document_str(approval, "promotionId"))
+        escrow = _lock_agreement_escrow(
+            promotion, agreement_id, idempotency_key=idempotency_key or f"approval-{approval_id}"
+        )
+        if escrow.get("status") == "FAILED":
+            # The decision is not recorded until the lock goes through; a person may retry.
+            repository.save_raw_document(
+                FirestorePaths.approval(approval_id),
+                {**approval, "lastAttempt": {**escrow, "at": _now()}, "updatedAt": _now()},
+            )
+            raise _problem(
+                status.HTTP_409_CONFLICT,
+                str(escrow.get("reason") or "ESCROW_LOCK_FAILED"),
+                str(escrow.get("detail") or "Escrow lock failed; approval stays PENDING."),
+            )
+        decided = _decide_approval(approval, decision="APPROVED", escrow=escrow)
+        _append_promotion_event(
+            repository,
+            promotion_id=promotion.promotion_id,
+            event_type="APPROVAL_GRANTED",
+            data={
+                "approvalId": approval_id,
+                "agreementId": agreement_id,
+                "amountUsdc": approval.get("amountUsdc"),
+                "escrowStatus": escrow.get("status"),
+                "escrowId": escrow.get("escrowId"),
+            },
+        )
+        _append_audit(
+            repository,
+            action="APPROVAL_GRANTED",
+            data={"approvalId": approval_id, "agreementId": agreement_id},
+        )
+        return _ok({"approval": decided, "escrow": escrow})
+
+    @router.post("/approvals/{approval_id}:reject")
+    def reject_approval(approval_id: str, request: ApprovalRejectRequest) -> dict[str, object]:
+        approval = _get_approval(repository, approval_id)
+        if approval.get("status") == "REJECTED":
+            return _ok({"approval": approval})
+        if approval.get("status") != "PENDING":
+            raise _problem(
+                status.HTTP_409_CONFLICT,
+                "INVALID_STATE_TRANSITION",
+                f"Approval {approval_id} is {approval.get('status')}, not PENDING.",
+            )
+        agreement_id = _require_document_str(approval, "agreementId")
+        decided = _decide_approval(approval, decision="REJECTED", reason=request.reason)
+        _append_promotion_event(
+            repository,
+            promotion_id=_require_document_str(approval, "promotionId"),
+            event_type="APPROVAL_REJECTED",
+            data={
+                "approvalId": approval_id,
+                "agreementId": agreement_id,
+                "amountUsdc": approval.get("amountUsdc"),
+                "reason": request.reason,
+            },
+        )
+        _append_audit(
+            repository,
+            action="APPROVAL_REJECTED",
+            data={"approvalId": approval_id, "agreementId": agreement_id},
+        )
+        return _ok({"approval": decided})
+
+    def _decide_approval(
+        approval: dict[str, object],
+        *,
+        decision: str,
+        escrow: dict[str, object] | None = None,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        """Persist the decision on the approval, the agreement and the campaign candidate."""
+        now = _now()
+        approval_id = _require_document_str(approval, "approvalId")
+        decided: dict[str, object] = {
+            **approval,
+            "status": decision,
+            "decidedAt": now,
+            "updatedAt": now,
+        }
+        if escrow is not None:
+            decided["escrow"] = escrow
+        if reason is not None:
+            decided["reason"] = reason
+        repository.save_raw_document(FirestorePaths.approval(approval_id), decided)
+
+        agreement_path = FirestorePaths.agreement(_require_document_str(approval, "agreementId"))
+        agreement = repository.get_raw_document(agreement_path)
+        if agreement is not None:
+            repository.save_raw_document(
+                agreement_path, {**agreement, "approvalStatus": decision, "updatedAt": now}
+            )
+        match_run_id, creator_id = approval.get("matchRunId"), approval.get("creatorId")
+        if isinstance(match_run_id, str) and isinstance(creator_id, str):
+            candidate_path = FirestorePaths.match_candidate(match_run_id, creator_id)
+            candidate = repository.get_raw_document(candidate_path)
+            if candidate is not None:
+                if decision == "APPROVED" and escrow is not None:
+                    candidate_escrow: dict[str, object] = {**escrow, "approvalId": approval_id}
+                else:
+                    candidate_escrow = {
+                        "status": "APPROVAL_REJECTED",
+                        "approvalId": approval_id,
+                        "reason": reason,
+                    }
+                repository.save_raw_document(
+                    candidate_path, {**candidate, "escrow": candidate_escrow, "updatedAt": now}
+                )
+        return decided
 
     @router.post("/promotions/{promotion_id}/match-runs", status_code=status.HTTP_201_CREATED)
     def create_match_run(
@@ -8428,6 +8671,13 @@ def _max_revision_rounds(agreement: dict[str, object]) -> int:
     if not terms.deliverables:
         return 0
     return max(deliverable.revision_rounds for deliverable in terms.deliverables)
+
+
+def _get_approval(repository: KnotRepository, approval_id: str) -> dict[str, object]:
+    approval = repository.get_raw_document(FirestorePaths.approval(approval_id))
+    if approval is None:
+        raise _not_found("approval", approval_id)
+    return approval
 
 
 def _get_agreement_document(repository: KnotRepository, agreement_id: str) -> dict[str, object]:

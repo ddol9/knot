@@ -4,6 +4,12 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from libs.observability.tracing import (
+    langsmith_project_from_env,
+    tracing_enabled_from_env,
+    tracing_sink_from_env,
+)
+
 
 def _load_dotenv() -> None:
     env_file = Path(__file__).resolve().parents[3] / ".env"
@@ -92,8 +98,17 @@ class Settings(BaseModel):
     automation_full_auto_threshold_usdc: float = 500.0  # < 500 USDC: 완전 자동
     automation_human_review_threshold_usdc: float = 1000.0  # < 1000 USDC: 검토 필요
     # >= 1000 USDC: 사람 서명 필요
+    # Governance guardrails on the autonomous settlement path (libs/policies/governance.py).
+    gov_max_auto_agreement_usdc: int = 800  # single agreement auto-fundable without a human
+    gov_max_auto_campaign_total_usdc: int = 2000  # cumulative committed in one campaign
+    gov_max_consecutive_failures: int = 3  # anomaly flag: last N negotiations all failed
     dev_admin_enabled: bool = False
     dev_admin_allowlist: list[str] = []
+    # Agent tracing (libs/observability/tracing.py): JSON lines on logger `knot.trace`,
+    # optionally mirrored to LangSmith when LANGSMITH_API_KEY/LANGCHAIN_API_KEY is set.
+    tracing_enabled: bool = True
+    tracing_sink: str = "log"  # log | langsmith
+    langsmith_project: str = "knot-agent-ops"
 
 
 @lru_cache
@@ -175,8 +190,16 @@ def get_settings(service_name: str | None = None) -> Settings:
         automation_human_review_threshold_usdc=float(
             os.getenv("AUTOMATION_HUMAN_REVIEW_THRESHOLD_USDC", "1000.0")
         ),
+        gov_max_auto_agreement_usdc=int(os.getenv("KNOT_GOV_MAX_AUTO_AGREEMENT_USDC", "800")),
+        gov_max_auto_campaign_total_usdc=int(
+            os.getenv("KNOT_GOV_MAX_AUTO_CAMPAIGN_TOTAL_USDC", "2000")
+        ),
+        gov_max_consecutive_failures=int(os.getenv("KNOT_GOV_MAX_CONSECUTIVE_FAILURES", "3")),
         dev_admin_enabled=_truthy(os.getenv("KNOT_DEV_ADMIN_ENABLED")),
         dev_admin_allowlist=_csv(os.getenv("KNOT_DEV_ADMIN_ALLOWLIST")),
+        tracing_enabled=tracing_enabled_from_env(),
+        tracing_sink=tracing_sink_from_env(),
+        langsmith_project=langsmith_project_from_env(),
     )
 
 

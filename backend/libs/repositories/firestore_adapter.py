@@ -28,9 +28,11 @@ class FirestoreCollectionReference(Protocol):
 
     def where(
         self,
-        field_path: str,
-        op_string: str,
-        value: object,
+        field_path: str | None = None,
+        op_string: str | None = None,
+        value: object = None,
+        *,
+        filter: object = None,
     ) -> "FirestoreQuery":
         pass
 
@@ -41,9 +43,11 @@ class FirestoreCollectionReference(Protocol):
 class FirestoreQuery(Protocol):
     def where(
         self,
-        field_path: str,
-        op_string: str,
-        value: object,
+        field_path: str | None = None,
+        op_string: str | None = None,
+        value: object = None,
+        *,
+        filter: object = None,
     ) -> "FirestoreQuery":
         pass
 
@@ -109,13 +113,24 @@ class FirestoreDocumentStore:
             collection_path
         )
         for query_filter in filters:
-            query = query.where(
-                query_filter.field_path,
-                query_filter.op,
-                query_filter.value,
-            )
+            query = _where(query, query_filter)
         return [
             dict(snapshot.to_dict() or {})
             for snapshot in query.limit(limit).stream()
             if snapshot.exists
         ]
+
+
+def _where(
+    query: FirestoreCollectionReference | FirestoreQuery,
+    query_filter: DocumentQueryFilter,
+) -> FirestoreQuery:
+    # google-cloud-firestore >= 2.11 deprecates positional where(); the keyword form is
+    # the one that survives into 3.x. Fall back to positional for clients without it.
+    try:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+    except ImportError:
+        return query.where(query_filter.field_path, query_filter.op, query_filter.value)
+    return query.where(
+        filter=FieldFilter(query_filter.field_path, query_filter.op, query_filter.value)
+    )

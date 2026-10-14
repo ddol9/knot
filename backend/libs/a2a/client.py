@@ -9,6 +9,7 @@ from libs.a2a.models import (
     A2ASendRequest,
     A2ATask,
 )
+from libs.observability.tracing import trace_headers
 
 
 class CreatorA2AClientError(RuntimeError):
@@ -89,7 +90,7 @@ class CreatorA2AClient:
         return A2ATask.model_validate(body["task"])
 
     def _headers(self, *, content_type: bool) -> dict[str, str]:
-        headers = {"A2A-Version": A2A_VERSION}
+        headers = {"A2A-Version": A2A_VERSION, **trace_headers()}
         if content_type:
             headers["Content-Type"] = "application/a2a+json"
         if self.service_token:

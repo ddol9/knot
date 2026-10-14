@@ -319,3 +319,164 @@ PR #2 병합(main `0bf46ec`). 새 브랜치에서 레지스트리가 운영 신�
 ### 남은 것 / 다음
 - [ ] Firestore에서 heartbeat → 브랜드 탐색 반영 실측 (복합 인덱스 포함)
 - [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
+
+## 세션 6a (2026-10-14) — Firestore 공유 레지스트리
+
+세션 5의 메모("메모리 저장소에서는 heartbeat 가 자기 프로세스에만 남는다")를 닫았다. 로컬 멀티 에이전트 스택이 **하나의 Firestore 에뮬레이터**를 보게 해서 heartbeat → 브랜드 탐색 → 캠페인 이력이 프로세스를 넘어 흐르는 것을 실측했다.
+
+### 추가/변경
+- `scripts/local/firebase.json` — Firestore 에뮬레이터 `:8780`(8080 은 Docker) + `firestore.indexes.json` 참조.
+- `scripts/local/a2a_multi_agent_firestore.sh` (신규) — 에뮬레이터(이미 떠 있으면 재사용) → `FIRESTORE_EMULATOR_HOST`/`GOOGLE_CLOUD_PROJECT=demo-knot`/`KNOT_REPOSITORY_BACKEND=firestore` → 시드 1회 → 크리에이터 A(:8091)/B(:8092)/브랜드(:8083). 브랜드에 `KNOT_CREATOR_AGENT_ENDPOINTS` 를 **주지 않는다** — B 테넌트(003/005)의 baseUrl 은 B 의 heartbeat 가 레지스트리에 쓴다. 메모리 스크립트는 그대로.
+- `backend/scripts/seed_firestore.py` (신규) — `seed_demo_repository` 를 Firestore 에, 멱등, 컬렉션별 개수 출력, `FIRESTORE_EMULATOR_HOST` 없으면 거부(`--allow-remote` 필요), 재시드 시 레지스트리 운영 신호 보존.
+- `libs/repositories/firestore_adapter.py` — `where(filter=FieldFilter(...))` (SDK 2.x 의 positional 폐기 경고가 탐색 쿼리마다 7개 나던 것 제거). 그 외 어댑터는 에뮬레이터에서 메모리 저장소와 결과 동일(원문 CRUD, `==`/`array_contains`/`<=`, limit, 서브컬렉션, 중첩/None/빈 컨테이너, create-only, 멱등키).
+- `firestore.indexes.json` — 탐색 쿼리(`_public_filters`)와 정확히 맞는 복합 인덱스 추가(등식 5 + `categoryKeys` CONTAINS + `nextAvailableAt` 범위). `docs/08` §19.
+- 테스트 `tests/test_firestore_emulator_agents.py` — 에뮬레이터 있을 때 3개(어댑터 왕복, 탐색 쿼리 = 메모리, heartbeat → 다른 클라이언트의 탐색 → 캠페인 → `negotiationStats`/`agreements`+milestones/`matchRuns`), 항상 1개(인덱스 드리프트). ExecPlan `.agent/execplans/09-firestore-shared-registry.md`.
+
+### 실행
+```bash
+# 필요: java 11+, node/npx, venv 에 google-cloud-firestore
+scripts/local/a2a_multi_agent_firestore.sh                       # 에뮬레이터 + 시드 + A/B/브랜드
+cd backend && python scripts/a2a_campaign.py --category beauty --total 1300 --target 2   # 2번 실행
+# Firestore UI: http://127.0.0.1:4000/firestore   관전: http://127.0.0.1:8083/brand/v1/campaign
+
+# 테스트 (에뮬레이터 떠 있을 때; 없으면 3개 skip)
+cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 pytest tests/test_firestore_emulator_agents.py
+# 시드만
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8780 GOOGLE_CLOUD_PROJECT=demo-knot \
+  python backend/scripts/seed_firestore.py --creator-agent-base-url http://127.0.0.1:8091/a2a/v1
+```
+
+### 실측 (LLM off, 포트 8191/8192/8183 으로 실행)
+- 1회차 탐색: 후보 6명 전부 🟢(크리에이터 heartbeat 를 브랜드가 Firestore 에서 읽음). 005/003 의 baseUrl 이 `127.0.0.1:8192`(B) — 엔드포인트 env 없이 레지스트리만으로 라우팅. 결과 TARGET_REACHED 2/2, 확정 1000/1300 (agent-creator-1 400, creator-agent-005 400→600).
+- 2회차 탐색: agent-creator-1 / creator-agent-005 가 `🟢1/1` (브랜드가 1회차에 쓴 `negotiationStats` 를 다시 읽음), 나머지 `-/-`.
+- 에뮬레이터 `agentRegistry/creator-agent-005`: `baseUrl=http://127.0.0.1:8192/a2a/v1`(B), `healthStatus=UP`, `lastProbeStatus=UP`, `negotiationStats.agreements=2/attempts=2`(2회차 후). `agreements` 4건, `matchRuns` 2건.
+
+### 메모
+- 에뮬레이터는 복합 인덱스를 강제하지 않는다. 인덱스 정합성은 테스트로, 실 Firestore 는 `firebase deploy --only firestore:indexes --config scripts/local/firebase.json`.
+- `dev_stack.sh`(Auth 에뮬레이터)와 동시에 띄우면 UI/허브 포트(4000/4400)가 겹친다.
+
+### 남은 것 / 다음
+- [ ] 제품 API(`apps/api`)도 같은 Firestore 로 붙여 에스크로 락까지 한 스택에서
+- [ ] 실 Firestore(knot-dev) 인덱스 배포 + 폴백 경고가 사라지는지 확인
+- [ ] 프론트 브랜드 대시보드에서 캠페인 실행·관전
+## 세션 6c (2026-10-14) — 거버넌스 가드레일 + 승인 큐
+
+PR #3 병합(main `726dbb9`). 자율 경로에 "한도 밖은 사람이 결정한다"를 코드로 넣었다.
+
+### 추가/변경
+- `libs/policies/governance.py` — `GovernanceRules`(settings), `evaluate_settlement`(단건 한도·캠페인 누적 한도·autoEscrow off), `flag_track_record`(연속 실패·저합의율). 결정적, LLM 없음, `governance-v1`.
+- `Settings.gov_*` — `KNOT_GOV_MAX_AUTO_AGREEMENT_USDC`(800), `KNOT_GOV_MAX_AUTO_CAMPAIGN_TOTAL_USDC`(2000), `KNOT_GOV_MAX_CONSECUTIVE_FAILURES`(3).
+- `libs/agents/brand_campaign.py` — `CampaignRunner(governance=)`. 정산 단계에서 승인 필요면 `approvals/{id}` PENDING 생성, `negotiation.escrow = PENDING_APPROVAL`, `approval_required` 이벤트, 정산 훅 미호출. 합의·예산 확정은 그대로.
+- `apps/api/routes.py` — `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}:approve`(멱등키 없으면 `approval-{id}`, 같은 `lock_escrow` 경로), `POST /approvals/{id}:reject`. 타임라인 `APPROVAL_REQUIRED`/`APPROVAL_GRANTED`/`APPROVAL_REJECTED`. `AGREEMENT_CREATED`는 정산 훅이 아니라 러너 이벤트에서 기록(승인 대기 합의도 남도록). `_lock_agreement_escrow` 헬퍼로 캠페인/승인 경로 공유.
+- `libs/agents/brand_discovery.py` — `trackRecord.flag`, `rank_score(flagged=)` ×0.7. `libs/a2a/registry.py` — `negotiationStats.recentOutcomes`(최근 10, CANCELED 제외).
+- `libs/repositories/firestore_paths.py` — `approvals`. `apps/api/schemas.py` — `ApprovalRejectRequest`.
+- 독립 브랜드 에이전트도 settings에서 거버넌스 주입. CLI·관전 페이지 "🙋 사람 승인 대기".
+- 테스트 `tests/test_governance.py`(10), `tests/test_api_approvals.py`(7). 전체 240 passed / 5 skipped. ExecPlan 11, docs/09 부록 5.
+
+### 메모
+- 시드 데모(promotion-001, open 400 / ceiling 700)는 기본 한도(800/2000)에서 둘 다 자동 락. 한도를 500으로 내리면 creator-agent-005의 600이 승인 큐로 간다 — 데모 때 `KNOT_GOV_MAX_AUTO_AGREEMENT_USDC=500`으로 보여줄 수 있다.
+- 캠페인 팬아웃은 병렬이라 어느 에이전트가 먼저 합의하는지 비결정적. 새 테스트는 `parallelism=1`. 기존 `test_campaign_skips_escrow_when_auto_escrow_is_off`가 전체 스위트 부하에서 드물게 agreedCount 2로 흔들림(목표 1인데 두 스레드가 동시에 합의) — 거버넌스와 무관, `brand_negotiator`의 should_stop 타이밍.
+- 승인 라우트는 캠페인 라우트처럼 인증 없음(데모). 운영 전 브랜드 소유자 인증 필요.
+
+### 남은 것 / 다음
+- [ ] 승인 라우트 인증(브랜드 소유자) + 프론트 승인 큐 화면
+- [ ] 마일스톤 릴리즈 측도 같은 규칙 모듈로 통합(현재 `AutomationLevel` 임계값 별도)
+- [ ] 승인 대기 알림(notifications/)
+- [x] 프론트 브랜드 대시보드에서 캠페인 실행·관전 → 세션 6b
+
+## 세션 6b (2026-10-14) — 브랜드 대시보드 캠페인 페이지
+
+브랜드 사용자가 제품 대시보드에서 캠페인(탐색 → 다중 A2A 협상 → 합의서 → 에스크로)을 실행하고 SSE로 관전하는 페이지. `frontend/`만 변경(백엔드 무수정).
+
+### 추가/변경
+- `frontend/src/product/campaignTypes.ts` — 캠페인 요청/응답과 SSE 이벤트 payload 타입(`CampaignStreamEvent` 판별 합집합).
+- `frontend/src/product/apiClient.ts` — `runCampaign(promotionId, body)`(POST), `campaignStreamUrl(promotionId, params)`(EventSource용 절대 URL, 같은 base URL 규칙).
+- `frontend/src/app/api/v1/[...path]/route.ts` — `text/event-stream` 응답은 버퍼링 없이 패스스루 + 클라이언트가 끊으면 업스트림 abort. (기존에는 `arrayBuffer()`로 모아서 캠페인이 끝날 때까지 아무 이벤트도 안 왔다. 백엔드 CORS가 3000만 허용해 직접 EventSource는 불가.)
+- `frontend/src/app/brand/campaign/` — `page.tsx`(`?promotionId=`), `useCampaignStream.ts`(리듀서/훅, 한국어 라벨), `components/`(조건 폼, 탐색 표(순위·점수·생존·이력·상태), 예산 장부 타일, 크리에이터별 대화 열(말풍선·입력 중), 결과 배너(합의서 링크)).
+- `frontend/src/features/dashboard/PromotionDetail.tsx` — "여러 크리에이터와 동시 협상" 링크.
+- `frontend/src/product/flow.ts` 라우트 목록 + 테스트, `frontend/tests/campaign-stream.test.ts`(실제 로컬 캠페인 이벤트 리플레이 등 6개).
+- ExecPlan `.agent/execplans/10-brand-campaign-page.md`.
+
+### 여는 법
+```bash
+# 백엔드 (메모리 저장소 + 데모 시드, 로컬 A2A)
+cd backend && KNOT_CREATOR_A2A_MODE=local KNOT_MEMORY_SEED_DEMO=1 .venv/bin/uvicorn apps.api.main:app --port 8180
+# 프론트 (.env.local에 KNOT_API_BASE_URL=http://127.0.0.1:8180 + Firebase 설정)
+cd frontend && PORT=3100 npm run dev
+# 브랜드 계정으로 로그인 → 프로모션 상세 → "여러 크리에이터와 동시 협상"
+#   또는 http://localhost:3100/brand/campaign?promotionId=promotion-001
+```
+
+### 실측
+- 백엔드 직접 `curl -N …/promotions/promotion-001/campaigns/stream?targetCreatorCount=2`: 탐색 6명 → agent-creator-1·creator-agent-005 각 800 즉시 수락 → 합의서 2건, 에스크로 `SKIPPED/WEB3_GATEWAY_REQUIRED`(로컬 모드) → 003/004 `TARGET_REACHED` 미시작 → `TARGET_REACHED` 2/2, 확정 1600/2000.
+- 프록시 경유(3100)도 같은 순서, `content-type: text/event-stream`. 1초 간격 모의 SSE를 프록시로 통과시켜 이벤트가 지연 없이 도착함을 확인.
+- `npm run typecheck`·eslint 클린, `npm test` 28 passed.
+- 페이지 자체는 Firebase 로그인 설정이 없는 환경이라 AuthGate("로그인이 필요합니다")까지만 브라우저로 확인. 로그인 이후 화면은 리듀서 리플레이 테스트로 대신 검증.
+
+### 메모
+- `campaign_result`/`error`/연결 오류를 받으면 EventSource를 즉시 닫는다. 열어 두면 자동 재접속으로 같은 프로모션 캠페인이 다시 시작된다.
+- "관전 중단"은 프록시의 업스트림 fetch를 abort하지만 백엔드 캠페인 스레드는 끝까지 돈다.
+- Turbopack은 워크트리의 `node_modules` 심링크를 거부해서 로컬 확인은 `next dev --webpack`으로 했다.
+
+### 남은 것 / 다음
+- [ ] 캠페인 결과 영속 조회(새로고침 후에도 보이게) — matchRuns/agreements에서 재구성
+- [ ] 백엔드 CORS에 프론트 포트 추가 또는 프록시 없는 배포 경로 검토
+- [ ] Firebase 로그인 환경에서 페이지 전체 플로우 눈으로 확인
+## 세션 6d (2026-10-14) — 에이전트 트레이싱
+
+캠페인 → 협상 → A2A 메시지 → LLM 호출이 **한 traceId의 스팬 트리**로 남게 했다. 외부 서비스 없이 표준 라이브러리로 `knot.trace` 로거에 JSON 한 줄/스팬. LangSmith는 키가 있고 `langsmith`가 import되면 선택 미러링.
+
+### 추가/변경
+- `libs/observability/tracing.py`(신규) — `span()`/`Span.set/event`, contextvars 전파(`propagate/bind/propagate_to_thread/start_trace`), 프로세스 간 헤더 `X-Trace-Id`/`X-Parent-Span-Id`, `LogSink`(기본)/`LangSmithSink`(선택, 실패 시 경고 1회 후 폴백), 리댁션(`ceiling*`/`min*`/`policy*` 드롭 + `redacted`), `install_logging()`(uvicorn 아래에서 INFO JSON 라인이 stderr로 나가게).
+- `libs/observability/middleware.py` — 요청마다 trace 바인딩(들어온 `X-Trace-Id`/`X-Request-Id` 재사용), 응답 `X-Trace-Id`. `libs/a2a/client.py` — 같은 헤더 전송 → 크리에이터 프로세스의 스팬이 브랜드 `a2a.send` 아래에 붙는다.
+- 계측: `campaign.run` → `campaign.discovery` / `negotiation.run`(워커 스레드 상속) → `a2a.send`·`a2a.cancel` + `turn` 이벤트; 크리에이터 `creator.decide` → `llm.call`(provider/model/fallbackReason/latency만, 프롬프트 없음).
+- traceId 부착: SSE `status`/`campaign_result`, `CampaignResult.traceId`, `BrandNegotiationResult.traceId`, `matchRuns/{id}.traceId`, API `meta.traceId`, 타임라인 `CAMPAIGN_STARTED/COMPLETED`.
+- `Settings.tracing_enabled`(`KNOT_TRACING`) / `tracing_sink`(`KNOT_TRACING_SINK`) / `langsmith_project`.
+- `scripts/trace_tail.py`(신규) — 로그 파일(들)/stdin → traceId별 트리(지속 시간·이벤트·`-f`). 브랜드+크리에이터 로그를 같이 주면 한 트리.
+- 테스트: `tests/test_tracing.py` 10개 + `tests/test_brand_campaign.py` 트리 검증 1개 + `tests/test_api_campaigns.py` traceId 단언. 전체 234 passed / 5 skipped / 6 deselected.
+- ExecPlan `.agent/execplans/12-agent-tracing.md`, `docs/agent_ops/02_langsmith_integration.md` 상단 "실제 구현".
+
+### 실측 (워크트리 코드로 브랜드 :8183 + 크리에이터 :8191, `scripts/a2a_campaign.py --brand-url http://127.0.0.1:8183/brand/v1`)
+```text
+trace dc36e20ed58c46babce99a824c738cf3  13 spans  124 ms  [knot-brand-agent, knot-creator-agent]
+campaign.run 124.2 ms ok @knot-brand-agent  outcome=TARGET_REACHED agreedCount=2 committedUsdc=1000 budgetUsdc=1300
+  campaign.discovery 79.2 ms ok  queried=6 ranked=6 probed=4 selected=4
+  negotiation.run 13.4 ms ok  creatorAgentId=agent-creator-1 outcome=AGREED rounds=1 finalAmountUsdc=400 agreementId=agreement-d7a1…
+    · turn +0.11 ms  round=1 role=brand type=OFFER amountUsdc=400
+    · turn +13.33 ms  round=1 role=creator type=ACCEPT amountUsdc=400 allowed=True
+    a2a.send 13.1 ms ok  type=OFFER round=1 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+      creator.decide 0.5 ms ok @knot-creator-agent  tenant=agent-creator-1 messageType=OFFER decisionType=ACCEPT violationCodes=[]
+        llm.call 0.0 ms ok @knot-creator-agent  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+  negotiation.run 30.1 ms ok  creatorAgentId=creator-agent-005 outcome=AGREED rounds=2 finalAmountUsdc=600 agreementId=agreement-169f…
+    · turn +0.06 ms  r1 brand OFFER 400 · +12.62 ms r1 creator COUNTER 600 · +15.6 ms r2 brand ACCEPT 600 · +30.01 ms r2 creator ACCEPT 600
+    a2a.send 12.5 ms ok  type=OFFER round=1 replyType=COUNTER taskState=TASK_STATE_INPUT_REQUIRED
+      creator.decide 0.4 ms ok @knot-creator-agent  messageType=OFFER decisionType=COUNTER violationCodes=["CREATOR_MIN_BASE_NOT_MET"]
+        llm.call 0.0 ms ok  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+    a2a.send 14.3 ms ok  type=ACCEPT round=2 replyType=ACCEPT taskState=TASK_STATE_COMPLETED
+      creator.decide 0.5 ms ok @knot-creator-agent  messageType=ACCEPT decisionType=ACCEPT violationCodes=[]
+        llm.call 0.0 ms ok  purpose=creator_rationale provider=deterministic fallbackReason=gemini_mode_off
+```
+
+### 메모
+- 로그 I/O가 GIL을 놓으면서 캠페인 팬아웃의 "목표 도달 후 동시 합의" 경합이 테스트에서 재현됐다(main에서는 5ms GIL 스위치 간격 덕에 안 보였을 뿐). 예산은 장부가 지키고 초과 합의는 설계상 허용. 정확한 합의 수를 단언하는 API 테스트만 `parallelism: 1`로 고정.
+- Starlette는 동기 제너레이터를 스텝마다 다른 컨텍스트 복사본에서 돌린다. 스트림 라우트는 첫 스텝(러너 생성)에만 trace를 바인딩하고, `campaign_event_stream`은 첫 yield 전에 컨텍스트를 캡처해 워커 스레드에 넘긴다.
+- `tests/test_api_promotions.py`의 A2A 헤더 정확 일치 단언 2곳은 trace 헤더를 빼고 비교하도록 바꿨다.
+
+### 남은 것 / 다음
+- [ ] 실제 LangSmith 키로 미러링 확인(가짜 `RunTree`로만 검증)
+- [ ] Cloud Run에서 `jsonPayload.traceId` 필터 실측
+- [ ] 단일 협상 API 경로(`routes.start_negotiation`)도 `negotiation.run` 스팬으로 감싸기(지금은 traceId 헤더만 나간다)
+
+## 세션 6 통합 (2026-10-14, 브랜치 `yewon/agent-world-phase6`)
+
+6a~6d 네 갈래를 서브에이전트 worktree에서 병렬로 만들고 통합했다. 충돌은 세션 기록(양쪽 덧붙임), `brand_agent/main.py` import, `brand_campaign.py` 탐색 호출(트레이싱 span + governance 인자) 셋뿐.
+
+### 통합 후 추가
+- **목표 슬롯**: 두 에이전트가 각자 발견한 경쟁(병렬 협상이 stop 플래그를 보기 전에 동시에 합의 → 목표 초과)을 세마포어 슬롯으로 막았다. 테스트 `test_parallel_fan_out_never_agrees_past_the_target`.
+- **취소 + 중복 방지**: `POST /promotions/{id}/campaigns/{campaignId}:cancel`, 프로모션당 실행 중 캠페인 1개(409 `CAMPAIGN_ALREADY_RUNNING`). 프론트 "관전 중단"이 이 엔드포인트를 부르면 서버 스레드도 멈춘다(프론트 연결은 다음).
+- 결과: 백엔드 254 passed / 8 skipped, 프론트 typecheck·eslint·28 tests.
+
+### 남은 것
+- [ ] 프론트 "관전 중단" → cancel 엔드포인트 호출, 승인 큐 화면
+- [ ] 승인·캠페인 라우트 인증
+- [ ] 단일 협상 경로(`start_negotiation`)에도 `negotiation.run` span

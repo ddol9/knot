@@ -8,6 +8,7 @@ from apps.api.demo_routes import build_demo_router
 from apps.api.repository_factory import build_repository
 from apps.api.routes import build_api_router
 from libs.observability.middleware import add_request_context
+from libs.observability.tracing import install_logging
 from libs.repositories.store import KnotRepository
 from libs.settings.config import Settings, get_settings
 
@@ -19,6 +20,7 @@ def create_app(
     repository: KnotRepository | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    install_logging(settings)
     repository = repository or build_repository(settings)
     app = FastAPI(title="KNOT API", version=settings.schema_version)
 

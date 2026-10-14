@@ -59,3 +59,6 @@ frontend/.omc/
 
 # venv symlink at repo root
 .venv
+
+# agent worktrees
+.claude/worktrees/
