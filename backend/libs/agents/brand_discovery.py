@@ -32,6 +32,7 @@ from libs.agents.discovery import (
 )
 from libs.agents.matching import score_creator
 from libs.domain.models import CreatorProfile, Promotion
+from libs.policies.governance import GovernanceRules, flag_track_record
 from libs.repositories.firestore_paths import FirestorePaths
 from libs.repositories.store import KnotRepository
 
@@ -39,6 +40,7 @@ NEGOTIATION_SKILL_ID = "promotion-negotiation"
 # Operational signals adjust the order, not the matching score itself.
 DOWN_RANK_MULTIPLIER = 0.85  # last known DOWN: probe later, but still probe
 TRACK_RECORD_WEIGHT = 0.05  # +-0.025 around a neutral (0.5) agreement rate
+FLAGGED_RANK_MULTIPLIER = 0.7  # governance anomaly flag: demote, never exclude
 
 # (base_url) -> agent card dict; raises on failure.
 CardProbe = Callable[[str], dict[str, Any]]
@@ -95,9 +97,11 @@ def discover_creator_agents(
     card_probe: CardProbe | None = None,
     probe_workers: int = 5,
     record_probes: bool = True,
+    governance: GovernanceRules | None = None,
 ) -> tuple[DiscoveryReport, dict[str, CreatorProfile]]:
     """Return the funnel result plus the full profiles of everything that reached stage 3."""
     overrides = dict(endpoint_overrides or {})
+    rules = governance or GovernanceRules()
 
     # 1 + 2: public projections, coarse rank.
     search = FirestoreCreatorDiscoveryRepository(repository).search(promotion, limit=limit * 4)
@@ -119,6 +123,15 @@ def discover_creator_agents(
         profiles[profile.creator_agent_id] = profile
         health = registry_health(entry)
         record = track_record(entry)
+        flag = flag_track_record(rules, record)
+        track: dict[str, Any] = {
+            "attempts": record.attempts,
+            "agreements": record.agreements,
+            "agreementRate": record.agreement_rate,
+            "lastOutcome": record.last_outcome,
+        }
+        if flag is not None:
+            track["flag"] = flag.model_dump(by_alias=True)
         candidates.append(
             CandidateAgent(
                 creatorAgentId=profile.creator_agent_id,
@@ -134,16 +147,12 @@ def discover_creator_agents(
                 completedDealCount=profile.completed_deal_count,
                 healthStatus=health["healthStatus"],
                 lastSeenAt=health["lastSeenAt"],
-                trackRecord={
-                    "attempts": record.attempts,
-                    "agreements": record.agreements,
-                    "agreementRate": record.agreement_rate,
-                    "lastOutcome": record.last_outcome,
-                },
+                trackRecord=track,
                 rankScore=rank_score(
                     precise.score if precise.eligible else 0.0,
                     health_status=health["healthStatus"],
                     agreement_rate=record.agreement_rate,
+                    flagged=flag is not None,
                 ),
             )
         )
@@ -216,9 +225,16 @@ def discover_creator_agents(
     return report, profiles
 
 
-def rank_score(score: float, *, health_status: str, agreement_rate: float) -> float:
-    """Matching score nudged by liveness and track record (neutral history = unchanged)."""
+def rank_score(
+    score: float, *, health_status: str, agreement_rate: float, flagged: bool = False
+) -> float:
+    """Matching score nudged by liveness, track record and governance anomaly flag.
+
+    Neutral history and no flag leave the score unchanged; a flag demotes but never excludes.
+    """
     multiplier = DOWN_RANK_MULTIPLIER if health_status == "DOWN" else 1.0
+    if flagged:
+        multiplier *= FLAGGED_RANK_MULTIPLIER
     return round(score * multiplier + TRACK_RECORD_WEIGHT * (agreement_rate - 0.5), 4)
 
 

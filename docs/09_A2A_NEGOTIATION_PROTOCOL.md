@@ -408,3 +408,66 @@ agreementRate = (agreements + 1) / (attempts + 2)      # 라플라스 보정, �
 DOWN은 하드 제외가 아니다. 프로브가 진실이므로 순서만 뒤로 보내고, 다시 UP이면 즉시 기록이 뒤집힌다.
 
 코드: `libs/a2a/registry.py` (`record_agent_heartbeat`, `record_agent_probe`, `record_negotiation_outcome`, `track_record`), `libs/agents/brand_discovery.rank_score`, `apps/creator_agent/main.py` heartbeat.
+
+## 부록 5: 거버넌스 가드레일과 승인 큐 (2026-10-14 추가)
+
+"사람 개입 없이 결제"는 **한도 안에서**다. 한도 밖은 결정적 규칙이 에스크로 직전에 멈추고 사람을 기다린다. 규칙은 `libs/policies/governance.py`, LLM 없음, 결정마다 `ruleVersion`(`governance-v1`)과 규칙 id를 남긴다.
+
+### 규칙과 임계값 (`Settings.gov_*`)
+| 규칙 id | 조건 | 환경변수 (기본) |
+|---|---|---|
+| `GOV_SINGLE_AGREEMENT_OVER_AUTO_LIMIT` | 합의 금액 > 단건 자동 한도 | `KNOT_GOV_MAX_AUTO_AGREEMENT_USDC` (800) |
+| `GOV_CAMPAIGN_TOTAL_OVER_AUTO_LIMIT` | 캠페인 누적 확정(이 합의 포함) > 캠페인 자동 한도 | `KNOT_GOV_MAX_AUTO_CAMPAIGN_TOTAL_USDC` (2000) |
+| `GOV_PROMOTION_AUTO_ESCROW_DISABLED` | `autonomy.autoEscrow=false` — 자동 불가지만 큐에도 안 넣음(수동 Phantom 펀딩이 이미 사람의 결정) | – |
+| `GOV_CONSECUTIVE_NEGOTIATION_FAILURES` | 최근 N건이 전부 REJECTED/ESCALATED/WALKED_AWAY/ROUND_LIMIT | `KNOT_GOV_MAX_CONSECUTIVE_FAILURES` (3) |
+| `GOV_LOW_AGREEMENT_RATE` | 시도 ≥ 4 이고 합의율(라플라스) < 0.2 | – |
+
+경계는 포함(≤ 한도면 자동). 레지스트리 `negotiationStats.recentOutcomes`(최근 10개, 브랜드 측 CANCELED 제외)가 스트릭 판정의 근거다.
+
+### 흐름
+```text
+A2A Task COMPLETED → termsHash 검증 → negotiations/ + agreements/ (FUNDING_REQUIRED) → 예산 확정
+→ evaluate_settlement(amount, campaignCommitted, promotion)
+     ├─ allowedAuto      → settlement hook → escrows/{id} LOCKED            (escrow_locked)
+     └─ requiresApproval → approvals/{id} PENDING, negotiation.escrow = PENDING_APPROVAL,
+                           agreements/{id}.approvalStatus = PENDING          (approval_required)
+                           ↓ 사람
+                           POST /approvals/{id}:approve → 같은 lock_escrow (멱등키 approval-{id})
+                                 → approvals APPROVED + escrow 요약, 타임라인 APPROVAL_GRANTED, ESCROW_LOCKED
+                           POST /approvals/{id}:reject {reason}
+                                 → approvals REJECTED, agreements.approvalStatus = REJECTED (상태는 FUNDING_REQUIRED 유지)
+```
+합의 자체는 되돌리지 않는다. 예산은 확정된 채로 자금 잠금만 사람 뒤로 미룬다.
+
+### 데이터
+```
+approvals/{approvalId}   {approvalId, type: ESCROW_LOCK, status: PENDING|APPROVED|REJECTED,
+                          promotionId, campaignId, matchRunId, agreementId, creatorAgentId, creatorId,
+                          amountUsdc, campaignCommittedUsdc, reasons[], ruleVersion,
+                          createdAt, decidedAt?, escrow?, reason?, lastAttempt?}
+agreements/{id}          + approvalId, approvalStatus
+agentRegistry/{id}       negotiationStats.recentOutcomes[]
+```
+
+### 이벤트 (SSE) / 타임라인
+- SSE: `approval_required {agreementId, approvalId, amountUsdc, campaignCommittedUsdc, reasons, ruleVersion}` (escrow_* 대신 발생)
+- 프로모션 타임라인: `APPROVAL_REQUIRED` → `APPROVAL_GRANTED` + `ESCROW_LOCKED` | `APPROVAL_REJECTED`
+
+### 엔드포인트
+| 메서드 | 경로 | 비고 |
+|---|---|---|
+| GET | `/api/v1/approvals?status=PENDING` | 큐 목록 (createdAt 순) |
+| GET | `/api/v1/approvals/{id}` | |
+| POST | `/api/v1/approvals/{id}:approve` | `Idempotency-Key` 선택(없으면 `approval-{id}`). 재호출 멱등(같은 에스크로). 락 실패 → 409, PENDING 유지 |
+| POST | `/api/v1/approvals/{id}:reject` | body `{reason}`. 재호출 멱등. APPROVED 뒤 거절/REJECTED 뒤 승인 → 409 |
+
+### 탐색에서의 이상 표시
+`flag_track_record`가 플래그를 돌려주면 후보 `trackRecord.flag = {code, detail, ruleVersion}`, `rankScore`에 ×0.7. 하드 제외는 없다(프로브·협상이 진실, 합의 1건이면 스트릭이 끊긴다).
+```text
+rankScore = score × (0.85 if DOWN) × (0.7 if flagged) + 0.05 × (agreementRate − 0.5)
+```
+
+### 어디서
+- 제품 API 캠페인(`_campaign_runner`)과 독립 브랜드 에이전트 모두 `GovernanceRules.from_settings(settings)`를 러너에 넣는다. 독립 에이전트는 정산이 어차피 `SETTLEMENT_VIA_PRODUCT_API`라 승인 문서만 자기 저장소에 남는다.
+- 관전 페이지·CLI: "🙋 사람 승인 대기 (approvalId …)".
+- 코드: `libs/policies/governance.py`, `libs/agents/brand_campaign.py::_queue_approval`, `apps/api/routes.py` 승인 라우트, `tests/test_governance.py`, `tests/test_api_approvals.py`.

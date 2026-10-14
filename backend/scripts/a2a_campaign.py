@@ -148,6 +148,12 @@ def main() -> int:
                         f"{data['amountUsdc']} USDC · {data['deliverableSummary']}  "
                         f"{DIM}termsHash {str(data['termsHash'])[:16]}…{RESET}"
                     )
+                elif event == "approval_required":
+                    print(
+                        f"  {YEL}🙋 [{agent}] 사람 승인 대기{RESET} approval {data['approvalId']}  "
+                        f"{data['amountUsdc']} USDC  {DIM}{', '.join(data.get('reasons') or [])}"
+                        f"{RESET}"
+                    )
                 elif event == "escrow_locked":
                     print(
                         f"  {CREATOR}🔒 [{agent}] 에스크로 잠금{RESET} {data.get('escrowId')}  "

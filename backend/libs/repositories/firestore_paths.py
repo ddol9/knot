@@ -66,6 +66,7 @@ class FirestoreCollection:
     admin_jobs: str = "adminJobs"
     deletion_jobs: str = "deletionJobs"
     wallet_challenges: str = "walletChallenges"
+    approvals: str = "approvals"
 
 
 COLLECTIONS = FirestoreCollection()
@@ -277,3 +278,7 @@ class FirestorePaths:
     @staticmethod
     def deletion_job(job_id: str) -> str:
         return document_path(COLLECTIONS.deletion_jobs, job_id)
+
+    @staticmethod
+    def approval(approval_id: str) -> str:
+        return document_path(COLLECTIONS.approvals, approval_id)
